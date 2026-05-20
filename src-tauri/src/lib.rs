@@ -121,16 +121,39 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle();
             let app_dir = app_handle.path().app_data_dir()
-                .expect("Failed to get app data dir");
+                .map_err(|e| {
+                    eprintln!("Failed to get app data dir: {}", e);
+                    e
+                })?;
+            
+            // Create app data directory if it doesn't exist
+            if let Err(e) = std::fs::create_dir_all(&app_dir) {
+                eprintln!("Failed to create app data directory: {}", e);
+            }
             
             // Initialize database
-            let db = tauri::async_runtime::block_on(async {
-                init_db(app_dir).await.expect("Failed to initialize database")
-            });
+            let db = match tauri::async_runtime::block_on(init_db(app_dir)) {
+                Ok(db) => db,
+                Err(e) => {
+                    eprintln!("Failed to initialize database: {}", e);
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Database initialization failed: {}", e)
+                    )));
+                }
+            };
 
             // Get or create master key
-            let master_key = get_or_create_master_key()
-                .expect("Failed to get master key");
+            let master_key = match get_or_create_master_key() {
+                Ok(key) => key,
+                Err(e) => {
+                    eprintln!("Failed to get master key: {}", e);
+                    return Err(Box::new(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Keychain initialization failed: {}", e)
+                    )));
+                }
+            };
 
             app.manage(AppState {
                 db,
@@ -140,8 +163,9 @@ pub fn run() {
 
             #[cfg(debug_assertions)]
             {
-                let window = app.get_webview_window("main").unwrap();
-                window.open_devtools();
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.open_devtools();
+                }
             }
             Ok(())
         })

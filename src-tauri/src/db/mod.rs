@@ -1,4 +1,4 @@
-use sqlx::{sqlite::SqlitePoolOptions, Pool, Sqlite};
+use sqlx::{sqlite::{SqlitePoolOptions, SqliteConnectOptions}, Pool, Sqlite};
 use std::path::PathBuf;
 
 use crate::error::AppError;
@@ -7,11 +7,15 @@ pub type DbPool = Pool<Sqlite>;
 
 pub async fn init_db(app_dir: PathBuf) -> Result<DbPool, AppError> {
     let db_path = app_dir.join("profiles.db");
-    let db_url = format!("sqlite:{}", db_path.display());
+    
+    // Use SqliteConnectOptions with PathBuf for proper path handling
+    let options = SqliteConnectOptions::new()
+        .filename(&db_path)
+        .create_if_missing(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect_with(options)
         .await
         .map_err(|e| AppError::Tunnel(format!("DB connection failed: {}", e)))?;
 
