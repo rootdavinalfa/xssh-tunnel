@@ -3,6 +3,8 @@ use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::error::AppError;
 
+pub mod keychain;
+
 const NONCE_LEN: usize = 12;
 const KEY_LEN: usize = 32;
 
