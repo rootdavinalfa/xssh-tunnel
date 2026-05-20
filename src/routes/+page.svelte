@@ -118,6 +118,13 @@
                 </Button>
               {/if}
               <Button 
+                onclick={() => window.location.href = `/connections/${profile.id}/edit`} 
+                variant="outline"
+                size="sm"
+              >
+                Edit
+              </Button>
+              <Button 
                 onclick={() => handleDelete(profile.id)} 
                 variant="outline"
                 size="sm"
