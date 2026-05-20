@@ -101,3 +101,25 @@ export function syncLogs() {
   });
   return unlisten;
 }
+
+// SSH config import
+export interface SshConfigEntry {
+  host_aliases: string[];
+  hostname: string;
+  user: string | null;
+  port: number | null;
+  identity_file: string | null;
+}
+
+export interface ParseResult {
+  entries: SshConfigEntry[];
+  skipped: string[];
+}
+
+export async function parseSshConfig(): Promise<ParseResult> {
+  return await invoke('parse_ssh_config_cmd');
+}
+
+export async function importSshConfig(selectedHosts: string[]): Promise<Profile[]> {
+  return await invoke('import_ssh_config_cmd', { selectedHosts });
+}

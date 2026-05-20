@@ -15,6 +15,7 @@ use db::{init_db, DbPool};
 use error::AppError;
 use logs::LogEntry;
 use profiles::{create_profile, update_profile, get_profiles, get_profile_by_id, delete_profile, CreateProfileRequest, UpdateProfileRequest};
+use ssh::config_parser::{parse_ssh_config, SshConfigEntry, ParseResult};
 use tunnel::{Tunnel, TunnelConfig};
 
 struct AppState {
@@ -165,6 +166,47 @@ async fn clear_logs_cmd(state: tauri::State<'_, AppState>) -> Result<(), AppErro
 }
 
 #[tauri::command]
+async fn parse_ssh_config_cmd() -> Result<ParseResult, AppError> {
+    parse_ssh_config(None)
+}
+
+#[tauri::command]
+async fn import_ssh_config_cmd(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    selected_hosts: Vec<String>,
+) -> Result<Vec<profiles::Profile>, AppError> {
+    let parse_result = parse_ssh_config(None)?;
+    let mut imported = Vec::new();
+
+    for entry in parse_result.entries {
+        if selected_hosts.contains(&entry.host_aliases[0]) {
+            let label = entry.host_aliases[0].clone();
+            let auth_type = if entry.identity_file.is_some() { "key_file" } else { "agent" };
+
+            let req = profiles::CreateProfileRequest {
+                label: label.clone(),
+                host: entry.hostname.clone(),
+                port: entry.port.unwrap_or(22),
+                username: entry.user.unwrap_or_else(|| "root".to_string()),
+                auth_type: auth_type.to_string(),
+                password: None,
+                private_key: None,
+                key_passphrase: None,
+                identity_file_path: entry.identity_file.clone(),
+            };
+
+            let profile = create_profile(&state.db, &state.master_key, req).await?;
+            emit_log(&app, &state.db, "info", &format!("Imported profile: {}", label), Some(&profile.id)).await;
+            imported.push(profile);
+        }
+    }
+
+    emit_log(&app, &state.db, "info", &format!("SSH config import complete: {} profiles imported", imported.len()), None).await;
+    Ok(imported)
+}
+
+#[tauri::command]
 fn greet(name: String) -> String {
     format!("Hello, {}! You've been greeted from Rust.", name)
 }
@@ -184,6 +226,8 @@ pub fn run() {
             disconnect_tunnel,
             get_logs_cmd,
             clear_logs_cmd,
+            parse_ssh_config_cmd,
+            import_ssh_config_cmd,
         ])
         .setup(|app| {
             let app_handle = app.handle();
