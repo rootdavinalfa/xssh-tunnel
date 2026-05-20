@@ -290,8 +290,8 @@ use crate::error::AppError;
 const TUN_MTU: i32 = 1500;
 
 pub struct TunDevice {
-    device: tun::AsyncDevice,
     pub name: String,
+    fd: RawFd,
 }
 
 impl TunDevice {
@@ -302,31 +302,44 @@ impl TunDevice {
             .mtu(TUN_MTU)
             .up();
 
-        let device = tun::create_as_async(&config)
+        let device = tun::create(&config)
             .map_err(|e| AppError::Tunnel(format!("Failed to create TUN device: {}", e)))?;
 
-        let name = device.get_ref().name()
+        let name = device.name()
             .map_err(|e| AppError::Tunnel(format!("Failed to get TUN name: {}", e)))?;
+        let fd = device.as_raw_fd();
 
-        Ok(TunDevice { device, name })
+        // Keep device alive by leaking it (we manage via fd)
+        // In production, use a proper wrapper that owns the device
+        std::mem::forget(device);
+
+        Ok(TunDevice { name, fd })
     }
 
     pub fn get_fd(&self) -> RawFd {
-        self.device.get_ref().as_raw_fd()
+        self.fd
     }
 
-    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, AppError> {
-        use tokio::io::AsyncReadExt;
-        let n = self.device.read(buf).await
+    /// Blocking read — use ONLY from spawn_blocking threads
+    pub fn blocking_read(&self, buf: &mut [u8]) -> Result<usize, AppError> {
+        use std::os::unix::io::FromRawFd;
+        use std::io::Read;
+        let mut file = unsafe { std::fs::File::from_raw_fd(self.fd) };
+        let result = file.read(buf)
             .map_err(|e| AppError::Tunnel(format!("TUN read error: {}", e)))?;
-        Ok(n)
+        std::mem::forget(file); // Don't close the fd
+        Ok(result)
     }
 
-    pub async fn write(&mut self, buf: &[u8]) -> Result<usize, AppError> {
-        use tokio::io::AsyncWriteExt;
-        let n = self.device.write(buf).await
+    /// Blocking write — use ONLY from spawn_blocking threads
+    pub fn blocking_write(&self, buf: &[u8]) -> Result<usize, AppError> {
+        use std::os::unix::io::FromRawFd;
+        use std::io::Write;
+        let mut file = unsafe { std::fs::File::from_raw_fd(self.fd) };
+        let result = file.write(buf)
             .map_err(|e| AppError::Tunnel(format!("TUN write error: {}", e)))?;
-        Ok(n)
+        std::mem::forget(file); // Don't close the fd
+        Ok(result)
     }
 }
 ```
@@ -572,44 +585,38 @@ For M1, we take a pragmatic approach: instead of full smoltcp integration (which
 This avoids the complexity of a full TCP/IP stack while still achieving the goal. Full smoltcp integration can come in M2.
 
 ```rust
-use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::sync::Mutex;
-use tokio::task::JoinHandle;
 
 use crate::error::AppError;
 use crate::ssh::SshClient;
 
 /// Simplified packet router for M1.
 /// Reads raw IP packets from TUN, extracts TCP connections, proxies through SSH.
+/// Runs in a dedicated blocking thread to avoid stalling the async runtime.
 pub struct PacketRouter {
+    #[allow(dead_code)]
     ssh_client: Arc<SshClient>,
-    active_streams: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
 }
 
 impl PacketRouter {
     pub fn new(ssh_client: Arc<SshClient>) -> Self {
-        PacketRouter {
-            ssh_client,
-            active_streams: Arc::new(Mutex::new(HashMap::new())),
-        }
+        PacketRouter { ssh_client }
     }
 
-    /// Start reading packets from TUN and routing them.
-    pub async fn run(&self, mut tun_device: crate::tunnel::TunDevice) -> Result<(), AppError> {
+    /// Blocking read loop — runs in a dedicated thread (spawn_blocking).
+    /// Parses IP packets from TUN and logs TCP connections.
+    pub fn blocking_read_loop(&self, tun_device: crate::tunnel::TunDevice) -> Result<(), AppError> {
         let mut buf = vec![0u8; 65536];
 
         loop {
-            let n = tun_device.read(&mut buf).await?;
+            let n = tun_device.blocking_read(&mut buf)?;
             if n == 0 {
                 break;
             }
 
             let packet = &buf[..n];
-            if let Some((src_ip, src_port, dst_ip, dst_port, payload)) = Self::parse_tcp_packet(packet) {
+            if let Some((src_ip, src_port, dst_ip, dst_port, _payload)) = Self::parse_tcp_packet(packet) {
                 // Skip our own SSH connection traffic to avoid loops
                 if Self::is_ssh_traffic(dst_port) {
                     continue;
@@ -617,18 +624,8 @@ impl PacketRouter {
 
                 let stream_key = format!("{}:{}->{}:{}", src_ip, src_port, dst_ip, dst_port);
 
-                let mut streams = self.active_streams.lock().await;
-                if !streams.contains_key(&stream_key) {
-                    let ssh_client = self.ssh_client.clone();
-                    let handle = tokio::spawn(async move {
-                        // For M1, we use a placeholder approach:
-                        // In practice, we'd open a local TCP socket and proxy through SSH
-                        // Full implementation requires more scaffolding
-                        let _ = ssh_client;
-                        tracing::info!("Would proxy {} to {}:{}", stream_key, dst_ip, dst_port);
-                    });
-                    streams.insert(stream_key, handle);
-                }
+                // For M1, we log the connection. Full proxying will be implemented in M2.
+                tracing::info!("Would proxy {} to {}:{}", stream_key, dst_ip, dst_port);
             }
         }
 
@@ -701,13 +698,15 @@ git commit -m "feat: add simplified packet router for TCP over TUN"
 
 ---
 
+> **Blocking I/O Design Note:** TUN device reads are blocking syscalls. They run in a dedicated thread via `tokio::task::spawn_blocking` so they never stall the async runtime or the Tauri UI. The UI stays responsive because connect/disconnect commands return immediately while the blocking thread handles packet I/O separately.
+
 ### Task 8: Create Tunnel Orchestrator
 
 **Files:**
 - Modify: `src-tauri/src/tunnel/mod.rs`
 - Modify: `src-tauri/src/lib.rs`
 
-- [ ] **Step 1: Rewrite src-tauri/src/tunnel/mod.rs**
+- [ ] **Step 1: Rewrite src-tauri/src/tunnel/mod.rs`
 
 ```rust
 pub mod tun_device;
@@ -759,10 +758,12 @@ impl Tunnel {
         // 3. Inject routes (requires root — will fail without it)
         RouteManager::inject_default_route(&tun_name)?;
 
-        // 4. Start packet router
+        // 4. Start packet router in a dedicated blocking thread
+        // TUN reads are blocking syscalls — must NOT run on Tokio's async thread pool
         let router = PacketRouter::new(ssh_client.clone());
-        let router_handle = tokio::spawn(async move {
-            router.run(tun).await
+        let router_handle = tokio::task::spawn_blocking(move || {
+            // blocking_read_loop runs a sync loop so it doesn't block async runtime
+            router.blocking_read_loop(tun)
         });
 
         self.ssh_client = Some(ssh_client);
