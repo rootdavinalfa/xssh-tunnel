@@ -39,6 +39,20 @@ pub struct CreateProfileRequest {
     pub identity_file_path: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub id: String,
+    pub label: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub auth_type: String,
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub key_passphrase: Option<String>,
+    pub identity_file_path: Option<String>,
+}
+
 pub async fn create_profile(
     pool: &DbPool,
     master_key: &[u8; 32],
@@ -95,6 +109,66 @@ pub async fn create_profile(
         created_at: now.clone(),
         updated_at: now,
     })
+}
+
+pub async fn update_profile(
+    pool: &DbPool,
+    master_key: &[u8; 32],
+    req: UpdateProfileRequest,
+) -> Result<Profile, AppError> {
+    let now = Utc::now().to_rfc3339();
+
+    let password_enc: Option<Vec<u8>> = match &req.password {
+        Some(p) if !p.is_empty() => Some(encrypt(p.as_bytes(), master_key)?),
+        _ => None,
+    };
+    let private_key_enc: Option<Vec<u8>> = match &req.private_key {
+        Some(k) if !k.is_empty() => Some(encrypt(k.as_bytes(), master_key)?),
+        _ => None,
+    };
+    let key_passphrase_enc: Option<Vec<u8>> = match &req.key_passphrase {
+        Some(p) if !p.is_empty() => Some(encrypt(p.as_bytes(), master_key)?),
+        _ => None,
+    };
+
+    sqlx::query(
+        r#"
+        UPDATE profiles SET
+            label = ?1,
+            host = ?2,
+            port = ?3,
+            username = ?4,
+            auth_type = ?5,
+            password_enc = CASE WHEN ?6 IS NOT NULL THEN ?6 ELSE password_enc END,
+            private_key_enc = CASE WHEN ?7 IS NOT NULL THEN ?7 ELSE private_key_enc END,
+            key_passphrase_enc = CASE WHEN ?8 IS NOT NULL THEN ?8 ELSE key_passphrase_enc END,
+            identity_file_path = CASE WHEN ?9 IS NOT NULL THEN ?9 ELSE identity_file_path END,
+            updated_at = ?10
+        WHERE id = ?11
+        "#,
+    )
+    .bind(&req.label)
+    .bind(&req.host)
+    .bind(req.port as i64)
+    .bind(&req.username)
+    .bind(&req.auth_type)
+    .bind(password_enc.as_ref().map(|v| v.as_slice()))
+    .bind(private_key_enc.as_ref().map(|v| v.as_slice()))
+    .bind(key_passphrase_enc.as_ref().map(|v| v.as_slice()))
+    .bind(&req.identity_file_path)
+    .bind(&now)
+    .bind(&req.id)
+    .execute(pool)
+    .await
+    .map_err(|e| AppError::Tunnel(format!("Update failed: {}", e)))?;
+
+    let profile = sqlx::query_as::<_, Profile>("SELECT * FROM profiles WHERE id = ?1")
+        .bind(&req.id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| AppError::Tunnel(format!("Failed to fetch updated profile: {}", e)))?;
+
+    Ok(profile)
 }
 
 pub async fn get_profiles(pool: &DbPool) -> Result<Vec<Profile>, AppError> {

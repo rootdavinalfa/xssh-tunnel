@@ -14,7 +14,7 @@ use crypto::keychain::get_or_create_master_key;
 use db::{init_db, DbPool};
 use error::AppError;
 use logs::LogEntry;
-use profiles::{create_profile, get_profiles, get_profile_by_id, delete_profile, CreateProfileRequest};
+use profiles::{create_profile, update_profile, get_profiles, get_profile_by_id, delete_profile, CreateProfileRequest, UpdateProfileRequest};
 use tunnel::{Tunnel, TunnelConfig};
 
 struct AppState {
@@ -57,6 +57,17 @@ async fn delete_profile_cmd(app: tauri::AppHandle, state: tauri::State<'_, AppSt
     delete_profile(&state.db, &id).await?;
     emit_log(&app, &state.db, "info", &format!("Profile deleted: {}", label), Some(&id)).await;
     Ok(())
+}
+
+#[tauri::command]
+async fn update_profile_cmd(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    req: UpdateProfileRequest,
+) -> Result<profiles::Profile, AppError> {
+    let profile = update_profile(&state.db, &state.master_key, req).await?;
+    emit_log(&app, &state.db, "info", &format!("Profile updated: {}", profile.label), Some(&profile.id)).await;
+    Ok(profile)
 }
 
 // Tunnel commands (updated to use profiles)
@@ -157,6 +168,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             create_profile_cmd,
+            update_profile_cmd,
             get_profiles_cmd,
             delete_profile_cmd,
             connect_tunnel,
