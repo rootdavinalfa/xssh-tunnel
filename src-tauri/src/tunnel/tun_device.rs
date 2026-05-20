@@ -14,7 +14,6 @@ impl TunDevice {
     pub fn create() -> Result<Self, AppError> {
         let mut config = Configuration::default();
         config
-            .tun_name("utun")
             .mtu(TUN_MTU)
             .up();
 
