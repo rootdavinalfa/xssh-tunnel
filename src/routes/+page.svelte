@@ -1,16 +1,17 @@
 <script>
   import { Button } from '$lib/components/ui/button';
+  import { greet } from '$lib/tauri';
+
   let name = $state('');
   let greeting = $state('');
   let loading = $state(false);
   let error = $state('');
 
-  async function greet() {
+  async function handleGreet() {
     loading = true;
     error = '';
     try {
-      const { invoke } = await import('@tauri-apps/api/core');
-      greeting = await invoke('greet', { name });
+      greeting = await greet(name);
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -31,7 +32,7 @@
       class="px-4 py-2 border rounded-md"
     />
     <Button
-      onclick={greet}
+      onclick={handleGreet}
       disabled={loading || !name}
     >
       {loading ? 'Loading...' : 'Greet'}
