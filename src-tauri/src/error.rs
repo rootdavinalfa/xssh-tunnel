@@ -14,6 +14,9 @@ pub enum AppError {
     #[error("Route error: {0}")]
     Route(String),
 
+    #[error("Database error: {0}")]
+    Database(String),
+
     #[error("Not connected")]
     NotConnected,
 

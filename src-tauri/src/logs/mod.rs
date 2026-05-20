@@ -32,7 +32,7 @@ pub async fn insert_log(
     .bind(profile_id)
     .execute(pool)
     .await
-    .map_err(|e| AppError::Tunnel(format!("Log insert failed: {}", e)))?;
+    .map_err(|e| AppError::Database(format!("Log insert failed: {}", e)))?;
 
     Ok(LogEntry {
         id,
@@ -54,7 +54,7 @@ pub async fn get_logs(
     .bind(limit)
     .fetch_all(pool)
     .await
-    .map_err(|e| AppError::Tunnel(format!("Log query failed: {}", e)))?;
+    .map_err(|e| AppError::Database(format!("Log query failed: {}", e)))?;
     Ok(rows)
 }
 
@@ -71,7 +71,7 @@ pub async fn get_logs_by_level(
     .bind(limit)
     .fetch_all(pool)
     .await
-    .map_err(|e| AppError::Tunnel(format!("Log query failed: {}", e)))?;
+    .map_err(|e| AppError::Database(format!("Log query by level failed: {}", e)))?;
     Ok(rows)
 }
 
@@ -80,7 +80,7 @@ pub async fn prune_old_logs(pool: &DbPool, max_age_days: i64) -> Result<u64, App
         .bind(format!("-{} days", max_age_days))
         .execute(pool)
         .await
-        .map_err(|e| AppError::Tunnel(format!("Log prune failed: {}", e)))?;
+        .map_err(|e| AppError::Database(format!("Log prune failed: {}", e)))?;
     Ok(result.rows_affected())
 }
 
@@ -88,6 +88,6 @@ pub async fn clear_logs(pool: &DbPool) -> Result<(), AppError> {
     sqlx::query("DELETE FROM logs")
         .execute(pool)
         .await
-        .map_err(|e| AppError::Tunnel(format!("Log clear failed: {}", e)))?;
+        .map_err(|e| AppError::Database(format!("Log clear failed: {}", e)))?;
     Ok(())
 }
