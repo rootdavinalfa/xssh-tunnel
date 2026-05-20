@@ -1,8 +1,9 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
-  import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState } from '$lib/tauri';
+  import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState, getLogs, syncLogs } from '$lib/tauri';
   import { profiles } from '$lib/stores/profiles';
   import { connectionState } from '$lib/stores/connection';
+  import { logEntries, clearStore } from '$lib/stores/logs';
   import { onMount } from 'svelte';
 
   let loading = $state(false);
@@ -10,8 +11,15 @@
 
   onMount(() => {
     const unlisten = syncConnectionState();
+    const unlistenLogs = syncLogs();
     loadProfiles();
-    return () => { unlisten.then(fn => fn()); };
+    getLogs(undefined, 10).then(logs => {
+      if (logs.length > 0) logEntries.set(logs);
+    }).catch(() => {});
+    return () => { 
+      unlisten.then(fn => fn());
+      unlistenLogs.then(fn => fn());
+    };
   });
 
   async function loadProfiles() {
@@ -53,6 +61,16 @@
       error = String(e);
     } finally {
       loading = false;
+    }
+  }
+
+  function levelClass(level: string): string {
+    switch (level) {
+      case 'error': return 'text-red-600';
+      case 'warn': return 'text-yellow-600';
+      case 'info': return 'text-gray-600';
+      case 'debug': return 'text-blue-600';
+      default: return '';
     }
   }
 </script>
@@ -117,5 +135,32 @@
         No connections yet. Click "New Connection" to add one.
       </p>
     {/if}
+  </div>
+
+  <!-- Logs Panel -->
+  <div class="mt-8">
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="text-lg font-semibold">Recent Activity</h2>
+      <a href="/logs" class="text-sm text-blue-600 hover:underline">View All</a>
+    </div>
+    <div class="border rounded-lg divide-y max-h-48 overflow-y-auto">
+      {#if $logEntries.length === 0}
+        <p class="text-sm text-muted-foreground px-4 py-3">
+          No activity yet. Connect to a server to see logs.
+        </p>
+      {:else}
+        {#each $logEntries.slice(0, 10) as entry (entry.id)}
+          <div class="px-4 py-2 flex gap-3 items-start">
+            <span class="text-xs text-gray-400 font-mono whitespace-nowrap">
+              {entry.timestamp.slice(11, 19)}
+            </span>
+            <span class="text-xs font-medium uppercase w-10 {levelClass(entry.level)}">
+              {entry.level}
+            </span>
+            <span class="text-sm flex-1">{entry.message}</span>
+          </div>
+        {/each}
+      {/if}
+    </div>
   </div>
 </div>
