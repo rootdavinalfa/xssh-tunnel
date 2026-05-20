@@ -4,6 +4,7 @@
   import LogPanel from '$lib/components/log-panel.svelte';
   import ImportDialog from '$lib/components/import-dialog.svelte';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+  import ConnectionFormDialog from '$lib/components/connection-form-dialog.svelte';
   import {
     getProfiles, deleteProfile, connectTunnel, disconnectTunnel,
     syncConnectionState, getConnectionState, getLogs, syncLogs,
@@ -17,6 +18,11 @@
 
   let loading = $state(false);
   let error = $state('');
+
+  // Connection form dialog state
+  let showConnForm = $state(false);
+  let connFormMode = $state<'new' | 'edit'>('new');
+  let editProfileId = $state('');
 
   // Import dialog state
   let showImportDialog = $state(false);
@@ -85,15 +91,27 @@
     }
   }
 
+  function handleNewClick() {
+    connFormMode = 'new';
+    editProfileId = '';
+    showConnForm = true;
+  }
+
   function handleEditClick(id: string) {
     if ($connectionState !== 'disconnected') {
       showConfirmDialog(
         'Connected Tunnel Detected',
-        'A tunnel is currently connected. Navigate away and edit this profile? The tunnel will remain active.',
-        () => { window.location.href = `/connections/${id}/edit`; }
+        'A tunnel is currently connected. Edit this profile? The tunnel will remain active.',
+        () => {
+          editProfileId = id;
+          connFormMode = 'edit';
+          showConnForm = true;
+        }
       );
     } else {
-      window.location.href = `/connections/${id}/edit`;
+      editProfileId = id;
+      connFormMode = 'edit';
+      showConnForm = true;
     }
   }
 
@@ -136,7 +154,6 @@
       showImportDialog = true;
     } catch (e) {
       importError = String(e);
-      // Still open dialog to show error
       showImportDialog = true;
     } finally {
       importLoading = false;
@@ -162,6 +179,10 @@
     showImportDialog = false;
     parseResult = null;
   }
+
+  function handleFormSaved() {
+    loadProfiles();
+  }
 </script>
 
 <div class="container mx-auto p-6 max-w-4xl">
@@ -176,7 +197,7 @@
       >
         Import from SSH Config
       </Button>
-      <Button onclick={() => window.location.href = '/connections/new'}>
+      <Button onclick={handleNewClick}>
         + New Connection
       </Button>
     </div>
@@ -210,6 +231,14 @@
 
   <!-- Logs Panel -->
   <LogPanel entries={$logEntries} />
+
+  <!-- Connection Form Dialog (New / Edit) -->
+  <ConnectionFormDialog
+    bind:open={showConnForm}
+    mode={connFormMode}
+    profileId={editProfileId}
+    onSave={handleFormSaved}
+  />
 
   <!-- Import Dialog -->
   <ImportDialog
