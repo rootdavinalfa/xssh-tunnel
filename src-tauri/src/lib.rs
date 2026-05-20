@@ -156,6 +156,16 @@ async fn disconnect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppSta
 }
 
 #[tauri::command]
+async fn get_connection_state_cmd(state: tauri::State<'_, AppState>) -> Result<String, AppError> {
+    let tunnel_guard = state.tunnel.lock().await;
+    if tunnel_guard.is_some() {
+        Ok("connected".to_string())
+    } else {
+        Ok("disconnected".to_string())
+    }
+}
+
+#[tauri::command]
 async fn get_logs_cmd(
     state: tauri::State<'_, AppState>,
     level: Option<String>,
@@ -232,6 +242,7 @@ pub fn run() {
             delete_profile_cmd,
             connect_tunnel,
             disconnect_tunnel,
+            get_connection_state_cmd,
             get_logs_cmd,
             clear_logs_cmd,
             parse_ssh_config_cmd,

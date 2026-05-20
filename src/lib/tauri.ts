@@ -79,6 +79,11 @@ export async function updateProfile(req: {
   return await invoke('update_profile_cmd', { req });
 }
 
+// Connection state
+export async function getConnectionState(): Promise<string> {
+  return await invoke('get_connection_state_cmd');
+}
+
 // Log commands
 export async function getLogs(level?: string, limit?: number): Promise<LogEntry[]> {
   return await invoke('get_logs_cmd', { level, limit });

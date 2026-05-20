@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
-  import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState, getLogs, syncLogs, parseSshConfig, importSshConfig } from '$lib/tauri';
+  import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState, getConnectionState, getLogs, syncLogs, parseSshConfig, importSshConfig } from '$lib/tauri';
   import type { ParseResult } from '$lib/tauri';
   import { profiles } from '$lib/stores/profiles';
   import { connectionState } from '$lib/stores/connection';
@@ -18,6 +18,10 @@
     const unlisten = syncConnectionState();
     const unlistenLogs = syncLogs();
     loadProfiles();
+    // Restore connection state from backend (persists across page navigations)
+    getConnectionState().then(state => {
+      if (state === 'connected') connectionState.set('tunnel-active');
+    }).catch(() => {});
     getLogs(undefined, 10).then(logs => {
       if (logs.length > 0) logEntries.set(logs);
     }).catch(() => {});
@@ -37,13 +41,30 @@
   }
 
   async function handleDelete(id: string) {
+    let proceed = true;
+    if ($connectionState !== 'disconnected') {
+      proceed = confirm('A tunnel is currently connected. Disconnect and delete this profile?');
+    }
+    if (!proceed) return;
     if (!confirm('Delete this profile?')) return;
     try {
+      if ($connectionState !== 'disconnected') {
+        await disconnectTunnel();
+      }
       await deleteProfile(id);
       await loadProfiles();
     } catch (e: unknown) {
       error = String(e);
     }
+  }
+
+  function handleEditClick(id: string) {
+    if ($connectionState !== 'disconnected') {
+      if (!confirm('A tunnel is currently connected. Navigate away and edit this profile?')) {
+        return;
+      }
+    }
+    window.location.href = `/connections/${id}/edit`;
   }
 
   async function handleConnect(profileId: string) {
@@ -179,7 +200,7 @@
                 </Button>
               {/if}
               <Button 
-                onclick={() => window.location.href = `/connections/${profile.id}/edit`} 
+                onclick={() => handleEditClick(profile.id)} 
                 variant="outline"
                 size="sm"
               >
