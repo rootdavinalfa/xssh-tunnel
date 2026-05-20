@@ -50,6 +50,14 @@ async fn get_profiles_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<profi
 }
 
 #[tauri::command]
+async fn get_profile_by_id_cmd(
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<profiles::Profile, AppError> {
+    get_profile_by_id(&state.db, &id).await
+}
+
+#[tauri::command]
 async fn delete_profile_cmd(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: String) -> Result<(), AppError> {
     // Get profile name before deleting
     let profile = get_profile_by_id(&state.db, &id).await?;
@@ -170,6 +178,7 @@ pub fn run() {
             create_profile_cmd,
             update_profile_cmd,
             get_profiles_cmd,
+            get_profile_by_id_cmd,
             delete_profile_cmd,
             connect_tunnel,
             disconnect_tunnel,

@@ -60,6 +60,25 @@ export async function deleteProfile(id: string): Promise<void> {
   return await invoke('delete_profile_cmd', { id });
 }
 
+export async function getProfileById(id: string): Promise<Profile> {
+  return await invoke('get_profile_by_id_cmd', { id });
+}
+
+export async function updateProfile(req: {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  auth_type: string;
+  password?: string;
+  private_key?: string;
+  key_passphrase?: string;
+  identity_file_path?: string;
+}): Promise<Profile> {
+  return await invoke('update_profile_cmd', { req });
+}
+
 // Log commands
 export async function getLogs(level?: string, limit?: number): Promise<LogEntry[]> {
   return await invoke('get_logs_cmd', { level, limit });
