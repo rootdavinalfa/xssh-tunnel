@@ -1,10 +1,20 @@
 <script>
   let name = $state('');
   let greeting = $state('');
+  let loading = $state(false);
+  let error = $state('');
 
   async function greet() {
-    const { invoke } = await import('@tauri-apps/api/core');
-    greeting = await invoke('greet', { name });
+    loading = true;
+    error = '';
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      greeting = await invoke('greet', { name });
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    } finally {
+      loading = false;
+    }
   }
 </script>
 
@@ -21,12 +31,16 @@
     />
     <button
       onclick={greet}
-      class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90"
+      disabled={loading || !name}
+      class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
     >
-      Greet
+      {loading ? 'Loading...' : 'Greet'}
     </button>
   </div>
 
+  {#if error}
+    <p class="mt-4 text-lg text-red-500">{error}</p>
+  {/if}
   {#if greeting}
     <p class="mt-4 text-lg">{greeting}</p>
   {/if}
