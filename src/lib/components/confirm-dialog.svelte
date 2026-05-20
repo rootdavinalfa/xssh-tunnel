@@ -1,6 +1,5 @@
 <script lang="ts">
   import * as AlertDialog from '$lib/components/ui/alert-dialog';
-  import { Button } from '$lib/components/ui/button';
 
   let {
     open = $bindable(false),
@@ -8,7 +7,7 @@
     description = 'Are you sure?',
     confirmLabel = 'Continue',
     cancelLabel = 'Cancel',
-    variant = 'default' as 'default' | 'destructive',
+    variant = 'destructive' as 'default' | 'destructive',
     onConfirm,
   }: {
     open?: boolean;
@@ -28,12 +27,8 @@
       <AlertDialog.Description>{description}</AlertDialog.Description>
     </AlertDialog.Header>
     <AlertDialog.Footer>
-      <AlertDialog.Cancel>
-        <Button variant="outline">{cancelLabel}</Button>
-      </AlertDialog.Cancel>
-      <AlertDialog.Action onclick={onConfirm}>
-        <Button variant={variant}>{confirmLabel}</Button>
-      </AlertDialog.Action>
+      <AlertDialog.Cancel variant="outline">{cancelLabel}</AlertDialog.Cancel>
+      <AlertDialog.Action variant={variant} onclick={onConfirm}>{confirmLabel}</AlertDialog.Action>
     </AlertDialog.Footer>
   </AlertDialog.Content>
 </AlertDialog.Root>
