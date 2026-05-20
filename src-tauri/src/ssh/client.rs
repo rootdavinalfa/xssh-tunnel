@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use russh::*;
-use russh_keys::*;
+use std::future::Future;
 use std::sync::Arc;
+
+use russh::*;
 
 use crate::error::AppError;
 
@@ -18,16 +18,14 @@ pub struct SshClient {
 
 struct ClientHandler;
 
-#[async_trait]
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(
+    fn check_server_key(
         &mut self,
-        _server_public_key: &key::PublicKey,
-    ) -> Result<bool, Self::Error> {
-        // TODO: Host key verification (M4)
-        Ok(true)
+        _server_public_key: &russh::keys::PublicKey,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+        async { Ok(true) }
     }
 }
 
@@ -49,7 +47,7 @@ impl SshClient {
             .await
             .map_err(|e| AppError::Ssh(format!("Auth failed: {}", e)))?;
 
-        if !auth_res {
+        if !auth_res.success() {
             return Err(AppError::Ssh("Password authentication failed".to_string()));
         }
 
