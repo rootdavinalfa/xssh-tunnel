@@ -1,4 +1,7 @@
 // lib.rs — all application logic lives here
+pub mod error;
+use error::AppError;
+
 use tauri::Manager;
 
 #[tauri::command]
