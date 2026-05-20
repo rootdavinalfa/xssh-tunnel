@@ -18,7 +18,19 @@ impl TunDevice {
             .up();
 
         let device = tun::create(&config)
-            .map_err(|e| AppError::Tunnel(format!("Failed to create TUN device: {}", e)))?;
+            .map_err(|e| {
+                let msg = format!("{}", e);
+                if msg.contains("Operation not permitted") || msg.contains("os error 1") {
+                    AppError::Tunnel(format!(
+                        "Failed to create TUN device: {}. \
+                        On macOS, creating TUN devices requires root privileges. \
+                        For development, run: sudo npm run tauri dev",
+                        e
+                    ))
+                } else {
+                    AppError::Tunnel(format!("Failed to create TUN device: {}", e))
+                }
+            })?;
 
         let name = device.tun_name()
             .map_err(|e| AppError::Tunnel(format!("Failed to get TUN name: {}", e)))?;
