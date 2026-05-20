@@ -1,4 +1,5 @@
 <script>
+  import { Button } from '$lib/components/ui/button';
   let name = $state('');
   let greeting = $state('');
   let loading = $state(false);
@@ -29,13 +30,12 @@
       placeholder="Enter your name..."
       class="px-4 py-2 border rounded-md"
     />
-    <button
+    <Button
       onclick={greet}
       disabled={loading || !name}
-      class="px-4 py-2 bg-primary text-primary-foreground rounded-md hover:bg-primary/90 disabled:opacity-50"
     >
       {loading ? 'Loading...' : 'Greet'}
-    </button>
+    </Button>
   </div>
 
   {#if error}
