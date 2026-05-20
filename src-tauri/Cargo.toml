@@ -29,6 +29,11 @@ russh-keys = "0.49.2"
 tun = { version = "0.8.9", features = ["async"] }
 tracing = "0.1"
 thiserror = "1"
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "uuid"] }
+ring = "0.17"
+security-framework = "3"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
