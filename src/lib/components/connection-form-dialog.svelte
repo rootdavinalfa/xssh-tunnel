@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import * as Dialog from '$lib/components/ui/dialog';
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
@@ -58,6 +57,17 @@
       loading = false;
     }
   }
+
+  // Load profile data when dialog opens in edit mode
+  $effect(() => {
+    if (open && mode === 'edit' && profileId) {
+      loadProfile();
+    } else if (open && mode === 'new') {
+      loading = false;
+      changeCredentials = false;
+      error = '';
+    }
+  });
 
   // Reset form when dialog opens
   function resetForm() {
