@@ -43,7 +43,27 @@ pub async fn init_db(app_dir: PathBuf) -> Result<DbPool, AppError> {
     )
     .execute(&pool)
     .await
-    .map_err(|e| AppError::Tunnel(format!("Migration failed: {}", e)))?;
+    .map_err(|e| AppError::Tunnel(format!("Profiles migration failed: {}", e)))?;
+
+    // Logs table
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS logs (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            level TEXT NOT NULL CHECK(level IN ('info', 'warn', 'error', 'debug')),
+            message TEXT NOT NULL,
+            profile_id TEXT,
+            FOREIGN KEY (profile_id) REFERENCES profiles(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp DESC);
+        CREATE INDEX IF NOT EXISTS idx_logs_level ON logs(level);
+        "#
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| AppError::Tunnel(format!("Logs migration failed: {}", e)))?;
 
     Ok(pool)
 }
