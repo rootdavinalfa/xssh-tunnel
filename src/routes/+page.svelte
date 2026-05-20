@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { Button } from '$lib/components/ui/button';
   import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState } from '$lib/tauri';
   import { profiles } from '$lib/stores/profiles';
@@ -23,22 +23,22 @@
     }
   }
 
-  async function handleDelete(id) {
+  async function handleDelete(id: string) {
     if (!confirm('Delete this profile?')) return;
     try {
       await deleteProfile(id);
       await loadProfiles();
-    } catch (e) {
+    } catch (e: unknown) {
       error = String(e);
     }
   }
 
-  async function handleConnect(profileId) {
+  async function handleConnect(profileId: string) {
     loading = true;
     error = '';
     try {
       await connectTunnel(profileId);
-    } catch (e) {
+    } catch (e: unknown) {
       error = String(e);
     } finally {
       loading = false;
@@ -49,7 +49,7 @@
     loading = true;
     try {
       await disconnectTunnel();
-    } catch (e) {
+    } catch (e: unknown) {
       error = String(e);
     } finally {
       loading = false;

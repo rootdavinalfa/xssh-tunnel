@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { Button } from '$lib/components/ui/button';
   import { Input } from '$lib/components/ui/input';
 
@@ -15,7 +15,7 @@
   let error = $state('');
   let saving = $state(false);
 
-  async function handleSubmit(e) {
+  async function handleSubmit(e: SubmitEvent) {
     e.preventDefault();
     saving = true;
     error = '';
@@ -32,7 +32,7 @@
         identity_file_path: authType === 'key_file' ? identityFilePath : undefined,
       });
       window.location.href = '/';
-    } catch (e) {
+    } catch (e: unknown) {
       error = String(e);
       saving = false;
     }

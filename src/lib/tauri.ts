@@ -13,8 +13,8 @@ export function onEvent<T>(eventName: string, callback: (payload: T) => void) {
   return listen<T>(eventName, (event) => callback(event.payload));
 }
 
-export async function connectTunnel(): Promise<string> {
-  return await invoke('connect_tunnel');
+export async function connectTunnel(profileId: string): Promise<string> {
+  return await invoke('connect_tunnel', { profileId });
 }
 
 export async function disconnectTunnel(): Promise<string> {
