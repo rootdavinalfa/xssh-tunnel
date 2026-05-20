@@ -2,6 +2,8 @@
   import * as Dialog from '$lib/components/ui/dialog';
   import * as Table from '$lib/components/ui/table';
   import { Button } from '$lib/components/ui/button';
+  import Alert from '$lib/components/ui/alert/alert.svelte';
+  import AlertDescription from '$lib/components/ui/alert/alert-description.svelte';
   import type { ParseResult, SshConfigEntry } from '$lib/tauri';
 
   let {
@@ -66,7 +68,9 @@
 
     {#if importError}
       <div class="px-6 py-2">
-        <p class="text-red-500 text-sm">{importError}</p>
+        <Alert variant="destructive">
+          <AlertDescription>{importError}</AlertDescription>
+        </Alert>
       </div>
     {/if}
 

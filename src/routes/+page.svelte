@@ -14,10 +14,10 @@
   import { profiles } from '$lib/stores/profiles';
   import { connectionState } from '$lib/stores/connection';
   import { logEntries } from '$lib/stores/logs';
+  import { toast } from 'svelte-sonner';
   import { onMount } from 'svelte';
 
   let loading = $state(false);
-  let error = $state('');
 
   // Connection form dialog state
   let showConnForm = $state(false);
@@ -64,17 +64,16 @@
       const data = await getProfiles();
       profiles.set(data);
     } catch (e) {
-      error = String(e);
+      toast.error(String(e));
     }
   }
 
   async function handleConnect(profileId: string) {
     loading = true;
-    error = '';
     try {
       await connectTunnel(profileId);
     } catch (e: unknown) {
-      error = String(e);
+      toast.error(String(e));
     } finally {
       loading = false;
     }
@@ -85,7 +84,7 @@
     try {
       await disconnectTunnel();
     } catch (e: unknown) {
-      error = String(e);
+      toast.error(String(e));
     } finally {
       loading = false;
     }
@@ -126,7 +125,7 @@
             await deleteProfile(id);
             await loadProfiles();
           } catch (e: unknown) {
-            error = String(e);
+            toast.error(String(e));
           }
         }
       );
@@ -139,7 +138,7 @@
             await deleteProfile(id);
             await loadProfiles();
           } catch (e: unknown) {
-            error = String(e);
+            toast.error(String(e));
           }
         }
       );
@@ -202,11 +201,6 @@
       </Button>
     </div>
   </div>
-
-  <!-- Error message -->
-  {#if error}
-    <p class="text-red-500 mb-4">{error}</p>
-  {/if}
 
   <!-- Profile list -->
   <div class="space-y-4">
