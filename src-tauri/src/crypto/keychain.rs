@@ -3,7 +3,7 @@ use security_framework::passwords::{get_generic_password, set_generic_password};
 use crate::error::AppError;
 use super::generate_master_key;
 
-const SERVICE_NAME: &str = "com.xssh.tunnel";
+const SERVICE_NAME: &str = "xyz.dvnlabs.xsshtunnel";
 const ACCOUNT_NAME: &str = "master_key";
 
 pub fn get_or_create_master_key() -> Result<[u8; 32], AppError> {
