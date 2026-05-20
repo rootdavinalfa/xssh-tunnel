@@ -13,6 +13,7 @@ pub mod tunnel;
 use crypto::keychain::get_or_create_master_key;
 use db::{init_db, DbPool};
 use error::AppError;
+use logs::LogEntry;
 use profiles::{create_profile, get_profiles, get_profile_by_id, delete_profile, CreateProfileRequest};
 use tunnel::{Tunnel, TunnelConfig};
 
@@ -22,10 +23,25 @@ struct AppState {
     tunnel: Mutex<Option<Tunnel>>,
 }
 
+async fn emit_log(
+    app_handle: &tauri::AppHandle,
+    db: &DbPool,
+    level: &str,
+    message: &str,
+    profile_id: Option<&str>,
+) {
+    let result = logs::insert_log(db, level, message, profile_id).await;
+    if let Ok(entry) = result {
+        let _ = app_handle.emit("log-entry", &entry);
+    }
+}
+
 // Profile commands
 #[tauri::command]
-async fn create_profile_cmd(state: tauri::State<'_, AppState>, req: CreateProfileRequest) -> Result<profiles::Profile, AppError> {
-    create_profile(&state.db, &state.master_key, req).await
+async fn create_profile_cmd(app: tauri::AppHandle, state: tauri::State<'_, AppState>, req: CreateProfileRequest) -> Result<profiles::Profile, AppError> {
+    let profile = create_profile(&state.db, &state.master_key, req).await?;
+    emit_log(&app, &state.db, "info", &format!("Profile created: {}", profile.label), Some(&profile.id)).await;
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -34,8 +50,13 @@ async fn get_profiles_cmd(state: tauri::State<'_, AppState>) -> Result<Vec<profi
 }
 
 #[tauri::command]
-async fn delete_profile_cmd(state: tauri::State<'_, AppState>, id: String) -> Result<(), AppError> {
-    delete_profile(&state.db, &id).await
+async fn delete_profile_cmd(app: tauri::AppHandle, state: tauri::State<'_, AppState>, id: String) -> Result<(), AppError> {
+    // Get profile name before deleting
+    let profile = get_profile_by_id(&state.db, &id).await?;
+    let label = profile.label.clone();
+    delete_profile(&state.db, &id).await?;
+    emit_log(&app, &state.db, "info", &format!("Profile deleted: {}", label), Some(&id)).await;
+    Ok(())
 }
 
 // Tunnel commands (updated to use profiles)
@@ -50,6 +71,7 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
     }
 
     let profile = get_profile_by_id(&state.db, &profile_id).await?;
+    emit_log(&app, &state.db, "info", &format!("Connecting to {}...", profile.host), Some(&profile_id)).await;
 
     app.emit("connection-state", "connecting").unwrap();
 
@@ -65,6 +87,7 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
         _ => (profile.username, None),
     };
 
+    emit_log(&app, &state.db, "info", "SSH authentication successful", Some(&profile_id)).await;
     app.emit("connection-state", "authenticating").unwrap();
 
     let config = TunnelConfig {
@@ -77,6 +100,7 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
     let mut tunnel = Tunnel::new();
     tunnel.start(config).await?;
 
+    emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
     app.emit("connection-state", "tunnel-active").unwrap();
 
     // Store tunnel (acquire lock again)
@@ -95,11 +119,30 @@ async fn disconnect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppSta
     
     if let Some(mut tunnel) = tunnel {
         tunnel.stop().await?;
+        emit_log(&app, &state.db, "info", "Disconnected from tunnel", None).await;
         app.emit("connection-state", "disconnected").unwrap();
         Ok("Disconnected".to_string())
     } else {
         Err(AppError::NotConnected)
     }
+}
+
+#[tauri::command]
+async fn get_logs_cmd(
+    state: tauri::State<'_, AppState>,
+    level: Option<String>,
+    limit: Option<u32>,
+) -> Result<Vec<LogEntry>, AppError> {
+    if let Some(lvl) = &level {
+        logs::get_logs_by_level(&state.db, lvl, limit).await
+    } else {
+        logs::get_logs(&state.db, limit).await
+    }
+}
+
+#[tauri::command]
+async fn clear_logs_cmd(state: tauri::State<'_, AppState>) -> Result<(), AppError> {
+    logs::clear_logs(&state.db).await
 }
 
 #[tauri::command]
@@ -118,6 +161,8 @@ pub fn run() {
             delete_profile_cmd,
             connect_tunnel,
             disconnect_tunnel,
+            get_logs_cmd,
+            clear_logs_cmd,
         ])
         .setup(|app| {
             let app_handle = app.handle();
@@ -156,10 +201,20 @@ pub fn run() {
                 }
             };
 
+            // Clone db for log pruning
+            let db_clone = db.clone();
+            
             app.manage(AppState {
                 db,
                 master_key,
                 tunnel: Mutex::new(None),
+            });
+
+            // Prune old logs
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = logs::prune_old_logs(&db_clone, 7).await {
+                    eprintln!("Failed to prune old logs: {}", e);
+                }
             });
 
             #[cfg(debug_assertions)]
