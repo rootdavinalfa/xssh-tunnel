@@ -1,7 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { connectionState, connectionError } from './stores/connection';
+import { appendLog } from './stores/logs';
 import type { Profile } from './stores/profiles';
+import type { LogEntry } from './stores/logs';
 
 // Type-safe wrapper for the greet command
 export async function greet(name: string): Promise<string> {
@@ -56,4 +58,27 @@ export async function getProfiles(): Promise<Profile[]> {
 
 export async function deleteProfile(id: string): Promise<void> {
   return await invoke('delete_profile_cmd', { id });
+}
+
+// Log commands
+export async function getLogs(level?: string, limit?: number): Promise<LogEntry[]> {
+  return await invoke('get_logs_cmd', { level, limit });
+}
+
+export async function clearLogs(): Promise<void> {
+  return await invoke('clear_logs_cmd');
+}
+
+export function listenLogs(callback: (entry: LogEntry) => void) {
+  return listen<LogEntry>('log-entry', (event) => {
+    callback(event.payload);
+  });
+}
+
+// Auto-sync logs to store
+export function syncLogs() {
+  const unlisten = listenLogs((entry) => {
+    appendLog(entry);
+  });
+  return unlisten;
 }
