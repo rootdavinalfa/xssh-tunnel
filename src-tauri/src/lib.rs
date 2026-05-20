@@ -118,15 +118,23 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
     };
 
     let mut tunnel = Tunnel::new();
-    tunnel.start(config).await?;
+    // Wrap in a block to catch connection errors and reset state
+    match tunnel.start(config).await {
+        Ok(()) => {
+            emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
+            app.emit("connection-state", "tunnel-active").unwrap();
 
-    emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
-    app.emit("connection-state", "tunnel-active").unwrap();
-
-    // Store tunnel (acquire lock again)
-    let mut tunnel_guard = state.tunnel.lock().await;
-    *tunnel_guard = Some(tunnel);
-    Ok("Connected".to_string())
+            // Store tunnel (acquire lock again)
+            let mut tunnel_guard = state.tunnel.lock().await;
+            *tunnel_guard = Some(tunnel);
+            Ok("Connected".to_string())
+        }
+        Err(e) => {
+            emit_log(&app, &state.db, "error", &format!("Connection failed: {}", e), Some(&profile_id)).await;
+            app.emit("connection-state", "disconnected").unwrap();
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
