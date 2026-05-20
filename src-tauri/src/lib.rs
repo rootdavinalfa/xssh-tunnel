@@ -2,7 +2,10 @@
 use tokio::sync::Mutex;
 use tauri::{Emitter, Manager};
 
+pub mod crypto;
+pub mod db;
 pub mod error;
+pub mod profiles;
 pub mod ssh;
 pub mod tunnel;
 
