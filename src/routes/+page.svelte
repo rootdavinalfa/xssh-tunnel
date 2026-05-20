@@ -1,31 +1,53 @@
 <script lang="ts">
   import { Button } from '$lib/components/ui/button';
-  import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState, getConnectionState, getLogs, syncLogs, parseSshConfig, importSshConfig } from '$lib/tauri';
+  import ProfileCard from '$lib/components/profile-card.svelte';
+  import LogPanel from '$lib/components/log-panel.svelte';
+  import ImportDialog from '$lib/components/import-dialog.svelte';
+  import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
+  import {
+    getProfiles, deleteProfile, connectTunnel, disconnectTunnel,
+    syncConnectionState, getConnectionState, getLogs, syncLogs,
+    parseSshConfig, importSshConfig,
+  } from '$lib/tauri';
   import type { ParseResult } from '$lib/tauri';
   import { profiles } from '$lib/stores/profiles';
   import { connectionState } from '$lib/stores/connection';
-  import { logEntries, clearStore } from '$lib/stores/logs';
+  import { logEntries } from '$lib/stores/logs';
   import { onMount } from 'svelte';
 
   let loading = $state(false);
   let error = $state('');
+
+  // Import dialog state
+  let showImportDialog = $state(false);
   let importLoading = $state(false);
   let importError = $state('');
   let parseResult = $state<ParseResult | null>(null);
-  let selectedHosts = $state<Set<string>>(new Set());
+
+  // Confirmation dialog state
+  let showConfirm = $state(false);
+  let confirmTitle = $state('');
+  let confirmDescription = $state('');
+  let confirmCallback = $state<() => void>(() => {});
+
+  function showConfirmDialog(title: string, description: string, onConfirm: () => void) {
+    confirmTitle = title;
+    confirmDescription = description;
+    confirmCallback = onConfirm;
+    showConfirm = true;
+  }
 
   onMount(() => {
     const unlisten = syncConnectionState();
     const unlistenLogs = syncLogs();
     loadProfiles();
-    // Restore connection state from backend (persists across page navigations)
     getConnectionState().then(state => {
       if (state === 'connected') connectionState.set('tunnel-active');
     }).catch(() => {});
     getLogs(undefined, 10).then(logs => {
       if (logs.length > 0) logEntries.set(logs);
     }).catch(() => {});
-    return () => { 
+    return () => {
       unlisten.then(fn => fn());
       unlistenLogs.then(fn => fn());
     };
@@ -38,33 +60,6 @@
     } catch (e) {
       error = String(e);
     }
-  }
-
-  async function handleDelete(id: string) {
-    let proceed = true;
-    if ($connectionState !== 'disconnected') {
-      proceed = confirm('A tunnel is currently connected. Disconnect and delete this profile?');
-    }
-    if (!proceed) return;
-    if (!confirm('Delete this profile?')) return;
-    try {
-      if ($connectionState !== 'disconnected') {
-        await disconnectTunnel();
-      }
-      await deleteProfile(id);
-      await loadProfiles();
-    } catch (e: unknown) {
-      error = String(e);
-    }
-  }
-
-  function handleEditClick(id: string) {
-    if ($connectionState !== 'disconnected') {
-      if (!confirm('A tunnel is currently connected. Navigate away and edit this profile?')) {
-        return;
-      }
-    }
-    window.location.href = `/connections/${id}/edit`;
   }
 
   async function handleConnect(profileId: string) {
@@ -90,48 +85,70 @@
     }
   }
 
-  let selectAll = $derived(
-    parseResult ? selectedHosts.size === parseResult.entries.length : false
-  );
-  let selectedCount = $derived(selectedHosts.size);
-
-  function toggleAll() {
-    if (!parseResult) return;
-    if (selectAll) {
-      selectedHosts = new Set();
+  function handleEditClick(id: string) {
+    if ($connectionState !== 'disconnected') {
+      showConfirmDialog(
+        'Connected Tunnel Detected',
+        'A tunnel is currently connected. Navigate away and edit this profile? The tunnel will remain active.',
+        () => { window.location.href = `/connections/${id}/edit`; }
+      );
     } else {
-      selectedHosts = new Set(parseResult.entries.map(e => e.host_aliases[0]));
+      window.location.href = `/connections/${id}/edit`;
     }
   }
 
-  function toggleHost(host: string) {
-    const next = new Set(selectedHosts);
-    if (next.has(host)) {
-      next.delete(host);
+  function handleDeleteClick(id: string) {
+    if ($connectionState !== 'disconnected') {
+      showConfirmDialog(
+        'Disconnect and Delete?',
+        'A tunnel is currently connected. Disconnect the tunnel and delete this profile?',
+        async () => {
+          try {
+            await disconnectTunnel();
+            await deleteProfile(id);
+            await loadProfiles();
+          } catch (e: unknown) {
+            error = String(e);
+          }
+        }
+      );
     } else {
-      next.add(host);
+      showConfirmDialog(
+        'Delete Profile?',
+        'Are you sure you want to delete this profile? This cannot be undone.',
+        async () => {
+          try {
+            await deleteProfile(id);
+            await loadProfiles();
+          } catch (e: unknown) {
+            error = String(e);
+          }
+        }
+      );
     }
-    selectedHosts = next;
   }
 
-  async function handleParse() {
+  async function handleParseAndOpenImport() {
     importLoading = true;
     importError = '';
     try {
       parseResult = await parseSshConfig();
-      selectedHosts = new Set(parseResult.entries.map(e => e.host_aliases[0]));
+      showImportDialog = true;
     } catch (e) {
       importError = String(e);
+      // Still open dialog to show error
+      showImportDialog = true;
     } finally {
       importLoading = false;
     }
   }
 
-  async function handleImport() {
+  async function handleImport(selectedHosts: string[]) {
     importLoading = true;
     importError = '';
     try {
-      await importSshConfig(Array.from(selectedHosts));
+      await importSshConfig(selectedHosts);
+      showImportDialog = false;
       parseResult = null;
       await loadProfiles();
     } catch (e) {
@@ -141,22 +158,22 @@
     }
   }
 
-  function levelClass(level: string): string {
-    switch (level) {
-      case 'error': return 'text-red-600';
-      case 'warn': return 'text-yellow-600';
-      case 'info': return 'text-gray-600';
-      case 'debug': return 'text-blue-600';
-      default: return '';
-    }
+  function handleCloseImport() {
+    showImportDialog = false;
+    parseResult = null;
   }
 </script>
 
 <div class="container mx-auto p-6 max-w-4xl">
+  <!-- Header -->
   <div class="flex justify-between items-center mb-6">
     <h1 class="text-3xl font-bold">XSSH Tunnel</h1>
     <div class="flex gap-2">
-      <Button variant="outline" onclick={async () => { await handleParse(); }}>
+      <Button
+        variant="outline"
+        onclick={handleParseAndOpenImport}
+        disabled={importLoading}
+      >
         Import from SSH Config
       </Button>
       <Button onclick={() => window.location.href = '/connections/new'}>
@@ -165,58 +182,23 @@
     </div>
   </div>
 
+  <!-- Error message -->
   {#if error}
     <p class="text-red-500 mb-4">{error}</p>
   {/if}
 
+  <!-- Profile list -->
   <div class="space-y-4">
     {#each $profiles as profile (profile.id)}
-      <div class="border rounded-lg p-4">
-        <div class="pb-2">
-          <div class="flex justify-between items-start">
-            <div>
-              <h3 class="font-semibold">{profile.label}</h3>
-              <p class="text-sm text-muted-foreground">
-                {profile.username}@{profile.host}:{profile.port}
-              </p>
-            </div>
-            <div class="flex gap-2">
-              {#if $connectionState === 'disconnected'}
-                <Button 
-                  onclick={() => handleConnect(profile.id)} 
-                  disabled={loading}
-                  size="sm"
-                >
-                  Connect
-                </Button>
-              {:else}
-                <Button 
-                  onclick={handleDisconnect} 
-                  disabled={loading}
-                  variant="destructive"
-                  size="sm"
-                >
-                  Disconnect
-                </Button>
-              {/if}
-              <Button 
-                onclick={() => handleEditClick(profile.id)} 
-                variant="outline"
-                size="sm"
-              >
-                Edit
-              </Button>
-              <Button 
-                onclick={() => handleDelete(profile.id)} 
-                variant="outline"
-                size="sm"
-              >
-                Delete
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
+      <ProfileCard
+        {profile}
+        connectionState={$connectionState}
+        {loading}
+        onConnect={handleConnect}
+        onDisconnect={handleDisconnect}
+        onEdit={handleEditClick}
+        onDelete={handleDeleteClick}
+      />
     {/each}
 
     {#if $profiles.length === 0}
@@ -227,111 +209,24 @@
   </div>
 
   <!-- Logs Panel -->
-  <div class="mt-8">
-    <div class="flex justify-between items-center mb-2">
-      <h2 class="text-lg font-semibold">Recent Activity</h2>
-      <a href="/logs" class="text-sm text-blue-600 hover:underline">View All</a>
-    </div>
-    <div class="border rounded-lg divide-y max-h-48 overflow-y-auto">
-      {#if $logEntries.length === 0}
-        <p class="text-sm text-muted-foreground px-4 py-3">
-          No activity yet. Connect to a server to see logs.
-        </p>
-      {:else}
-        {#each $logEntries.slice(0, 10) as entry (entry.id)}
-          <div class="px-4 py-2 flex gap-3 items-start">
-            <span class="text-xs text-gray-400 font-mono whitespace-nowrap">
-              {entry.timestamp.slice(11, 19)}
-            </span>
-            <span class="text-xs font-medium uppercase w-10 {levelClass(entry.level)}">
-              {entry.level}
-            </span>
-            <span class="text-sm flex-1">{entry.message}</span>
-          </div>
-        {/each}
-      {/if}
-    </div>
-  </div>
+  <LogPanel entries={$logEntries} />
 
   <!-- Import Dialog -->
-  {#if parseResult}
-    <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick={() => parseResult = null}>
-      <div class="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[80vh] overflow-y-auto" onclick={(e) => e.stopPropagation()}>
-        <div class="p-6">
-          <div class="flex justify-between items-center mb-4">
-            <h2 class="text-xl font-bold">Import from ~/.ssh/config</h2>
-            <button onclick={() => parseResult = null} class="text-gray-400 hover:text-gray-600 text-2xl">&times;</button>
-          </div>
+  <ImportDialog
+    bind:open={showImportDialog}
+    {parseResult}
+    {importLoading}
+    {importError}
+    onImport={handleImport}
+  />
 
-          {#if importError}
-            <p class="text-red-500 mb-4">{importError}</p>
-          {/if}
-
-          {#if importLoading}
-            <p class="text-center text-muted-foreground py-8">Importing...</p>
-          {:else}
-            <p class="text-sm text-muted-foreground mb-4">
-              Found {parseResult.entries.length} hosts
-              {#if parseResult.skipped.length > 0}
-                (skipped: {parseResult.skipped.join(', ')})
-              {/if}
-            </p>
-
-            {#if parseResult.entries.length > 0}
-              <table class="w-full border-collapse">
-                <thead>
-                  <tr class="border-b">
-                    <th class="text-left py-2 px-2">
-                      <input type="checkbox" checked={selectAll} onchange={toggleAll} />
-                    </th>
-                    <th class="text-left py-2 px-2 text-sm font-medium">Host</th>
-                    <th class="text-left py-2 px-2 text-sm font-medium">Hostname</th>
-                    <th class="text-left py-2 px-2 text-sm font-medium">User</th>
-                    <th class="text-left py-2 px-2 text-sm font-medium">Port</th>
-                    <th class="text-left py-2 px-2 text-sm font-medium">Key File</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {#each parseResult.entries as entry}
-                    <tr class="border-b hover:bg-gray-50">
-                      <td class="py-2 px-2">
-                        <input
-                          type="checkbox"
-                          checked={selectedHosts.has(entry.host_aliases[0])}
-                          onchange={() => toggleHost(entry.host_aliases[0])}
-                        />
-                      </td>
-                      <td class="py-2 px-2 text-sm">{entry.host_aliases[0]}</td>
-                      <td class="py-2 px-2 text-sm">{entry.hostname}</td>
-                      <td class="py-2 px-2 text-sm">{entry.user || '-'}</td>
-                      <td class="py-2 px-2 text-sm">{entry.port || 22}</td>
-                      <td class="py-2 px-2 text-sm">{entry.identity_file ? 'Yes' : 'No'}</td>
-                    </tr>
-                  {/each}
-                </tbody>
-              </table>
-
-              <div class="flex justify-end gap-2 mt-6">
-                <Button variant="outline" onclick={() => { parseResult = null; }}>
-                  Cancel
-                </Button>
-                <Button onclick={handleImport} disabled={selectedCount === 0}>
-                  Import {selectedCount} {selectedCount === 1 ? 'profile' : 'profiles'}
-                </Button>
-              </div>
-            {:else}
-              <p class="text-center text-muted-foreground py-8">
-                No importable hosts found.
-              </p>
-              <div class="flex justify-end">
-                <Button variant="outline" onclick={() => { parseResult = null; }}>
-                  Close
-                </Button>
-              </div>
-            {/if}
-          {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
+  <!-- Confirmation Dialog -->
+  <ConfirmDialog
+    bind:open={showConfirm}
+    title={confirmTitle}
+    description={confirmDescription}
+    confirmLabel="Continue"
+    variant="destructive"
+    onConfirm={confirmCallback}
+  />
 </div>
