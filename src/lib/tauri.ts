@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { connectionState, connectionError } from './stores/connection';
+import type { Profile } from './stores/profiles';
 
 // Type-safe wrapper for the greet command
 export async function greet(name: string): Promise<string> {
@@ -32,4 +33,27 @@ export function syncConnectionState() {
     connectionState.set(state as any);
   });
   return unlisten;
+}
+
+// Profile commands
+export async function createProfile(profile: {
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  auth_type: string;
+  password?: string;
+  private_key?: string;
+  key_passphrase?: string;
+  identity_file_path?: string;
+}): Promise<Profile> {
+  return await invoke('create_profile_cmd', { req: profile });
+}
+
+export async function getProfiles(): Promise<Profile[]> {
+  return await invoke('get_profiles_cmd');
+}
+
+export async function deleteProfile(id: string): Promise<void> {
+  return await invoke('delete_profile_cmd', { id });
 }

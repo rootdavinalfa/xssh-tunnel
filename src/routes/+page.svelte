@@ -1,7 +1,8 @@
 <script>
   import { Button } from '$lib/components/ui/button';
-  import { connectTunnel, disconnectTunnel, syncConnectionState } from '$lib/tauri';
-  import { connectionState, connectionError } from '$lib/stores/connection';
+  import { getProfiles, deleteProfile, connectTunnel, disconnectTunnel, syncConnectionState } from '$lib/tauri';
+  import { profiles } from '$lib/stores/profiles';
+  import { connectionState } from '$lib/stores/connection';
   import { onMount } from 'svelte';
 
   let loading = $state(false);
@@ -9,17 +10,36 @@
 
   onMount(() => {
     const unlisten = syncConnectionState();
+    loadProfiles();
     return () => { unlisten.then(fn => fn()); };
   });
 
-  async function handleConnect() {
+  async function loadProfiles() {
+    try {
+      const data = await getProfiles();
+      profiles.set(data);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function handleDelete(id) {
+    if (!confirm('Delete this profile?')) return;
+    try {
+      await deleteProfile(id);
+      await loadProfiles();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function handleConnect(profileId) {
     loading = true;
     error = '';
     try {
-      await connectTunnel();
+      await connectTunnel(profileId);
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
-      connectionError.set(error);
+      error = String(e);
     } finally {
       loading = false;
     }
@@ -27,48 +47,75 @@
 
   async function handleDisconnect() {
     loading = true;
-    error = '';
     try {
       await disconnectTunnel();
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e);
+      error = String(e);
     } finally {
       loading = false;
     }
   }
-
-  let stateColor = $derived(() => {
-    switch ($connectionState) {
-      case 'tunnel-active': return 'text-green-500';
-      case 'connecting': return 'text-yellow-500';
-      case 'authenticating': return 'text-blue-500';
-      case 'error': return 'text-red-500';
-      default: return 'text-gray-500';
-    }
-  });
 </script>
 
-<div class="flex flex-col items-center justify-center min-h-screen gap-4 p-8">
-  <h1 class="text-3xl font-bold">XSSH Tunnel</h1>
-  <p class="text-muted-foreground">Milestone 1 — Core Tunnel</p>
-
-  <div class="flex flex-col items-center gap-2 mt-4">
-    <p class="text-lg">
-      Status: <span class={stateColor()}>{$connectionState}</span>
-    </p>
-
-    {#if $connectionState === 'disconnected'}
-      <Button onclick={handleConnect} disabled={loading}>
-        {loading ? 'Connecting...' : 'Connect'}
-      </Button>
-    {:else}
-      <Button onclick={handleDisconnect} disabled={loading} variant="destructive">
-        {loading ? 'Disconnecting...' : 'Disconnect'}
-      </Button>
-    {/if}
+<div class="container mx-auto p-6 max-w-4xl">
+  <div class="flex justify-between items-center mb-6">
+    <h1 class="text-3xl font-bold">XSSH Tunnel</h1>
+    <Button onclick={() => window.location.href = '/connections/new'}>
+      + New Connection
+    </Button>
   </div>
 
   {#if error}
-    <p class="mt-4 text-lg text-red-500">{error}</p>
+    <p class="text-red-500 mb-4">{error}</p>
   {/if}
+
+  <div class="space-y-4">
+    {#each $profiles as profile (profile.id)}
+      <div class="border rounded-lg p-4">
+        <div class="pb-2">
+          <div class="flex justify-between items-start">
+            <div>
+              <h3 class="font-semibold">{profile.label}</h3>
+              <p class="text-sm text-muted-foreground">
+                {profile.username}@{profile.host}:{profile.port}
+              </p>
+            </div>
+            <div class="flex gap-2">
+              {#if $connectionState === 'disconnected'}
+                <Button 
+                  onclick={() => handleConnect(profile.id)} 
+                  disabled={loading}
+                  size="sm"
+                >
+                  Connect
+                </Button>
+              {:else}
+                <Button 
+                  onclick={handleDisconnect} 
+                  disabled={loading}
+                  variant="destructive"
+                  size="sm"
+                >
+                  Disconnect
+                </Button>
+              {/if}
+              <Button 
+                onclick={() => handleDelete(profile.id)} 
+                variant="outline"
+                size="sm"
+              >
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    {/each}
+
+    {#if $profiles.length === 0}
+      <p class="text-center text-muted-foreground py-8">
+        No connections yet. Click "New Connection" to add one.
+      </p>
+    {/if}
+  </div>
 </div>
