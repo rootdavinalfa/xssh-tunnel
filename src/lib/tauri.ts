@@ -2,8 +2,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { connectionState, connectionError } from './stores/connection';
 import { appendLog } from './stores/logs';
+import { helperStatus } from './stores/helper';
 import type { Profile } from './stores/profiles';
 import type { LogEntry } from './stores/logs';
+import type { HelperStatus } from './stores/helper';
 
 // Type-safe wrapper for the greet command
 export async function greet(name: string): Promise<string> {
@@ -127,4 +129,21 @@ export async function parseSshConfig(): Promise<ParseResult> {
 
 export async function importSshConfig(selectedHosts: string[]): Promise<Profile[]> {
   return await invoke('import_ssh_config_cmd', { selectedHosts });
+}
+
+// Helper commands
+export async function getHelperStatus(): Promise<HelperStatus> {
+  const status = await invoke('get_helper_status_cmd') as HelperStatus;
+  helperStatus.set(status);
+  return status;
+}
+
+export async function installHelper(): Promise<void> {
+  await invoke('install_helper_cmd');
+  await getHelperStatus();
+}
+
+export async function uninstallHelper(): Promise<void> {
+  await invoke('uninstall_helper_cmd');
+  await getHelperStatus();
 }

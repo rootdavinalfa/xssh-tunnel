@@ -8,16 +8,18 @@
   import {
     getProfiles, deleteProfile, connectTunnel, disconnectTunnel,
     syncConnectionState, getConnectionState, getLogs, syncLogs,
-    parseSshConfig, importSshConfig,
+    parseSshConfig, importSshConfig, getHelperStatus,
   } from '$lib/tauri';
   import type { ParseResult } from '$lib/tauri';
   import { profiles } from '$lib/stores/profiles';
   import { connectionState } from '$lib/stores/connection';
   import { logEntries } from '$lib/stores/logs';
+  import { helperStatus } from '$lib/stores/helper';
   import { toast } from 'svelte-sonner';
   import { onMount } from 'svelte';
 
   let loading = $state(false);
+  let dismissedBanner = $state(false);
 
   // Connection form dialog state
   let showConnForm = $state(false);
@@ -53,6 +55,7 @@
     getLogs(undefined, 10).then(logs => {
       if (logs.length > 0) logEntries.set(logs);
     }).catch(() => {});
+    getHelperStatus().catch(() => {});
     return () => {
       unlisten.then(fn => fn());
       unlistenLogs.then(fn => fn());
@@ -196,11 +199,34 @@
       >
         Import from SSH Config
       </Button>
+      <Button
+        variant="ghost"
+        onclick={() => window.location.href = '/settings'}
+        size="sm"
+      >
+        ⚙ Settings
+      </Button>
       <Button onclick={handleNewClick}>
         + New Connection
       </Button>
     </div>
   </div>
+
+  {#if !$helperStatus.installed && !dismissedBanner}
+    <div class="bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3 mb-4 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="text-yellow-600 text-sm">
+          ⚠ Privileged Helper not installed. TUN device creation requires it.
+        </span>
+        <Button variant="outline" size="sm" onclick={() => window.location.href = '/settings'}>
+          Install
+        </Button>
+      </div>
+      <button onclick={() => dismissedBanner = true} class="text-yellow-400 hover:text-yellow-600 text-lg leading-none">
+        &times;
+      </button>
+    </div>
+  {/if}
 
   <!-- Profile list -->
   <div class="space-y-4">
