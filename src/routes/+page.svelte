@@ -19,6 +19,7 @@
   import { onMount } from 'svelte';
 
   let loading = $state(false);
+  let disconnecting = $state(false);
   let dismissedBanner = $state(false);
 
   // Connection form dialog state
@@ -83,13 +84,14 @@
   }
 
   async function handleDisconnect() {
-    loading = true;
+    if (disconnecting) return;
+    disconnecting = true;
     try {
       await disconnectTunnel();
     } catch (e: unknown) {
       toast.error(String(e));
     } finally {
-      loading = false;
+      disconnecting = false;
     }
   }
 
@@ -238,6 +240,7 @@
         {profile}
         connectionState={$connectionState}
         {loading}
+        {disconnecting}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}
         onEdit={handleEditClick}

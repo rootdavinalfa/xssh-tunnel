@@ -6,6 +6,7 @@
     profile,
     connectionState,
     loading,
+    disconnecting,
     onConnect,
     onDisconnect,
     onEdit,
@@ -14,6 +15,7 @@
     profile: Profile;
     connectionState: string;
     loading: boolean;
+    disconnecting: boolean;
     onConnect: (id: string) => void;
     onDisconnect: () => void;
     onEdit: (id: string) => void;
@@ -41,6 +43,7 @@
       {:else}
         <Button
           onclick={onDisconnect}
+          disabled={disconnecting}
           variant="destructive"
           size="sm"
         >
