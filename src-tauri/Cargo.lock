@@ -7375,6 +7375,7 @@ dependencies = [
  "core-foundation",
  "futures",
  "libc",
+ "objc2",
  "ring",
  "russh",
  "russh-keys",

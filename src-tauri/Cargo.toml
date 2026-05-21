@@ -36,6 +36,7 @@ security-framework = "3"
 core-foundation = "0.10"
 libc = "0.2"
 shellexpand = "3.1.0"
+objc2 = "0.6"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
