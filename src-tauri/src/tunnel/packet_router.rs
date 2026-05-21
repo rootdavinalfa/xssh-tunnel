@@ -23,7 +23,8 @@ impl PacketRouter {
         let mut buf = vec![0u8; 65536];
 
         loop {
-            let n = tun_device.blocking_read(&mut buf)?;
+            let n = tun_device.blocking_read(&mut buf)
+                .map_err(|e| AppError::Tunnel(e))?;
             if n == 0 {
                 break;
             }
