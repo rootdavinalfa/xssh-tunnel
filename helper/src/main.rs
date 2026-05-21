@@ -262,7 +262,8 @@ fn send_fd(stream: &UnixStream, fd: RawFd) {
         if sent >= 0 {
             log_debug!("TUN fd {} transferred to client", fd);
         } else {
-            log_error!("failed to send fd to client");
+            let errno = unsafe { *libc::__error() };
+            log_error!("failed to send fd to client (errno: {})", errno);
         }
     }
 }
