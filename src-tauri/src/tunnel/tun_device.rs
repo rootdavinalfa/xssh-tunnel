@@ -12,6 +12,12 @@ impl TunDevice {
         Ok(TunDevice { name: name.to_string(), fd })
     }
 
+    /// Wrap an owned File (consumes it)
+    pub fn from_fd_raw(file: std::fs::File) -> Self {
+        let fd = file.as_raw_fd();
+        TunDevice { name: String::new(), fd }
+    }
+
     pub fn get_fd(&self) -> RawFd {
         self.fd
     }
