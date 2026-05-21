@@ -5,6 +5,8 @@
   import { Badge } from '$lib/components/ui/badge';
   import { getHelperStatus, installHelper, uninstallHelper } from '$lib/tauri';
   import { helperStatus } from '$lib/stores/helper';
+  import Alert from '$lib/components/ui/alert/alert.svelte';
+  import AlertDescription from '$lib/components/ui/alert/alert-description.svelte';
 
   let installing = $state(false);
   let uninstalling = $state(false);
@@ -55,7 +57,9 @@
   </div>
 
   {#if error}
-    <p class="text-red-500 mb-4">{error}</p>
+    <Alert variant="destructive" class="mb-4">
+      <AlertDescription>{error}</AlertDescription>
+    </Alert>
   {/if}
 
   <Card>

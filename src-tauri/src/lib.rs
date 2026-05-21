@@ -111,42 +111,66 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
     app.emit("connection-state", "authenticating").unwrap();
 
     // Connect to privileged helper
-    let mut helper = HelperClient::connect()
-        .map_err(|_| AppError::Tunnel(
-            "Privileged Helper not available. Go to Settings to install.".to_string()
-        ))?;
+    let helper_connect_result = HelperClient::connect();
 
-    // Create TUN device via helper
-    let (tun_name, tun_fd) = helper.create_tun()?;
-    emit_log(&app, &state.db, "info", &format!("TUN device {} created via helper", tun_name), Some(&profile_id)).await;
-
-    // Inject routes via helper
-    helper.add_route(&tun_name)?;
-    emit_log(&app, &state.db, "info", "Routes injected via helper", Some(&profile_id)).await;
-
-    // Start tunnel with pre-created TUN
-    let mut tunnel = Tunnel::new();
-    let config = TunnelConfig {
-        ssh_host: profile.host.clone(),
-        ssh_port: profile.port as u16,
-        ssh_username: username.clone(),
-        ssh_password: password.unwrap_or_default(),
-    };
-
-    match tunnel.start(config, tun_fd, &tun_name).await {
-        Ok(()) => {
-            emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
-            app.emit("connection-state", "tunnel-active").unwrap();
-            let mut tunnel_guard = state.tunnel.lock().await;
-            *tunnel_guard = Some(tunnel);
-            let mut helper_guard = state.helper.lock().await;
-            *helper_guard = Some(helper);
-            Ok("Connected".to_string())
-        }
+    let mut helper = match helper_connect_result {
+        Ok(h) => h,
         Err(e) => {
             emit_log(&app, &state.db, "error", &format!("Connection failed: {}", e), Some(&profile_id)).await;
             app.emit("connection-state", "disconnected").unwrap();
-            let _ = helper.cleanup_routes(&tun_name).ok();
+            return Err(e);
+        }
+    };
+
+    // Create TUN device via helper
+    let tun_result = helper.create_tun();
+    match tun_result {
+        Ok((tun_name, tun_fd)) => {
+            emit_log(&app, &state.db, "info", &format!("TUN device {} created via helper", tun_name), Some(&profile_id)).await;
+
+            // Inject routes via helper
+            let route_result = helper.add_route(&tun_name);
+            match route_result {
+                Ok(()) => {
+                    emit_log(&app, &state.db, "info", "Routes injected via helper", Some(&profile_id)).await;
+
+                    // Start tunnel with pre-created TUN
+                    let mut tunnel = Tunnel::new();
+                    let config = TunnelConfig {
+                        ssh_host: profile.host.clone(),
+                        ssh_port: profile.port as u16,
+                        ssh_username: username.clone(),
+                        ssh_password: password.unwrap_or_default(),
+                    };
+
+                    match tunnel.start(config, tun_fd, &tun_name).await {
+                        Ok(()) => {
+                            emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
+                            app.emit("connection-state", "tunnel-active").unwrap();
+                            let mut tunnel_guard = state.tunnel.lock().await;
+                            *tunnel_guard = Some(tunnel);
+                            let mut helper_guard = state.helper.lock().await;
+                            *helper_guard = Some(helper);
+                            Ok("Connected".to_string())
+                        }
+                        Err(e) => {
+                            emit_log(&app, &state.db, "error", &format!("Tunnel start failed: {}", e), Some(&profile_id)).await;
+                            app.emit("connection-state", "disconnected").unwrap();
+                            let _ = helper.cleanup_routes(&tun_name);
+                            Err(e)
+                        }
+                    }
+                }
+                Err(e) => {
+                    emit_log(&app, &state.db, "error", &format!("Route injection failed: {}", e), Some(&profile_id)).await;
+                    app.emit("connection-state", "disconnected").unwrap();
+                    Err(e)
+                }
+            }
+        }
+        Err(e) => {
+            emit_log(&app, &state.db, "error", &format!("TUN creation failed: {}", e), Some(&profile_id)).await;
+            app.emit("connection-state", "disconnected").unwrap();
             Err(e)
         }
     }
