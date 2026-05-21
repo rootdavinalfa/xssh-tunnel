@@ -177,6 +177,7 @@ fn create_tun_device() -> Result<(String, RawFd), String> {
 
 fn inject_routes(tun_name: &str) -> Result<(), String> {
     log_info!("injecting routes via {}", tun_name);
+    log_debug!("route add -net 0.0.0.0/1 -interface {}", tun_name);
     let status = Command::new("route")
         .args(["add", "-net", "0.0.0.0/1", "-interface", tun_name])
         .status()
@@ -189,8 +190,7 @@ fn inject_routes(tun_name: &str) -> Result<(), String> {
         log_error!("route add 0.0.0.0/1 returned non-zero");
         return Err("Failed to add default route (0.0.0.0/1)".to_string());
     }
-    log_debug!("route 0.0.0.0/1 added");
-
+    log_debug!("route add -net 128.0.0.0/1 -interface {}", tun_name);
     let status = Command::new("route")
         .args(["add", "-net", "128.0.0.0/1", "-interface", tun_name])
         .status()
@@ -201,9 +201,7 @@ fn inject_routes(tun_name: &str) -> Result<(), String> {
         log_error!("route add 128.0.0.0/1 returned non-zero");
         return Err("Failed to add default route (128.0.0.0/1)".to_string());
     }
-    log_debug!("route 128.0.0.0/1 added");
     log_info!("routes injected successfully");
-
     Ok(())
 }
 
@@ -259,7 +257,12 @@ fn send_fd(stream: &UnixStream, fd: RawFd) {
     };
 
     unsafe {
-        libc::sendmsg(raw_fd, &msg, 0);
+        let sent = libc::sendmsg(raw_fd, &msg, 0);
+        if sent >= 0 {
+            log_debug!("TUN fd {} transferred to client", fd);
+        } else {
+            log_error!("failed to send fd to client");
+        }
     }
 }
 
