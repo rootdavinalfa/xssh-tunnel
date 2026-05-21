@@ -49,6 +49,40 @@ impl HelperClient {
         Ok(())
     }
 
+    pub fn get_gateway(&mut self) -> Result<String, AppError> {
+        self.send_command(r#"{"cmd":"get_gateway"}"#)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper get_gateway failed: {}", err)));
+        }
+        response["result"]["gateway"].as_str()
+            .map(|s| s.to_string())
+            .ok_or_else(|| AppError::Tunnel("Missing gateway in response".to_string()))
+    }
+
+    pub fn add_host_route(&mut self, host_ip: &str) -> Result<(), AppError> {
+        let cmd = format!(r#"{{"cmd":"add_host_route","host_ip":"{}"}}"#, host_ip);
+        self.send_command(&cmd)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper add_host_route failed: {}", err)));
+        }
+        Ok(())
+    }
+
+    pub fn remove_host_route(&mut self, host_ip: &str) -> Result<(), AppError> {
+        let cmd = format!(r#"{{"cmd":"remove_host_route","host_ip":"{}"}}"#, host_ip);
+        self.send_command(&cmd)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper remove_host_route failed: {}", err)));
+        }
+        Ok(())
+    }
+
     pub fn cleanup_routes(&mut self, tun_name: &str) -> Result<(), AppError> {
         let cmd = format!(r#"{{"cmd":"cleanup_routes","tun_name":"{}"}}"#, tun_name);
         self.send_command(&cmd)?;

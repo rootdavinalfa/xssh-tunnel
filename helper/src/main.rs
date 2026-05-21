@@ -39,6 +39,7 @@ macro_rules! log_error {
 struct Request {
     cmd: String,
     tun_name: Option<String>,
+    host_ip: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -54,6 +55,8 @@ struct Response {
 struct ResponseResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     tun_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gateway: Option<String>,
 }
 
 fn handle_connection(mut stream: UnixStream) {
@@ -96,7 +99,7 @@ fn handle_connection(mut stream: UnixStream) {
                         send_fd(&stream, fd);
                         let resp = Response {
                             ok: true,
-                            result: Some(ResponseResult { tun_name: Some(name.clone()) }),
+                            result: Some(ResponseResult { tun_name: Some(name.clone()), gateway: None }),
                             error: None,
                         };
                         let resp_str = format!("{}\n", serde_json::to_string(&resp).unwrap());
@@ -126,6 +129,51 @@ fn handle_connection(mut stream: UnixStream) {
                     }
                 } else {
                     let resp = Response { ok: false, result: None, error: Some("No TUN device".to_string()) };
+                    let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                }
+            }
+            "get_gateway" => {
+                match get_default_gateway() {
+                    Ok(gw) => {
+                        let resp = Response {
+                            ok: true,
+                            result: Some(ResponseResult { tun_name: None, gateway: Some(gw) }),
+                            error: None,
+                        };
+                        let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                    }
+                    Err(e) => {
+                        let resp = Response { ok: false, result: None, error: Some(e) };
+                        let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                    }
+                }
+            }
+            "add_host_route" => {
+                let host_ip = req.host_ip;
+                if let Some(ref ip) = host_ip {
+                    match add_host_route(ip) {
+                        Ok(()) => {
+                            let resp = Response { ok: true, result: None, error: None };
+                            let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                        }
+                        Err(e) => {
+                            let resp = Response { ok: false, result: None, error: Some(e) };
+                            let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                        }
+                    }
+                } else {
+                    let resp = Response { ok: false, result: None, error: Some("Missing host_ip".to_string()) };
+                    let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                }
+            }
+            "remove_host_route" => {
+                let host_ip = req.host_ip;
+                if let Some(ref ip) = host_ip {
+                    remove_host_route(ip);
+                    let resp = Response { ok: true, result: None, error: None };
+                    let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                } else {
+                    let resp = Response { ok: false, result: None, error: Some("Missing host_ip".to_string()) };
                     let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
                 }
             }
@@ -228,6 +276,67 @@ fn cleanup_routes(_tun_name: &str) {
         .status();
     let _ = Command::new("route")
         .args(["delete", "-net", "128.0.0.0/1"])
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Get the current default gateway IP on macOS
+fn get_default_gateway() -> Result<String, String> {
+    // macOS: route -n get default returns the gateway
+    let output = Command::new("route")
+        .args(["-n", "get", "default"])
+        .output()
+        .map_err(|e| format!("Failed to get default route: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Parse "gateway: 192.168.1.1" from output
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.starts_with("gateway:") {
+            let gw = line.split(':').nth(1).unwrap_or("").trim();
+            if !gw.is_empty() && gw != "en0" && gw != "en1" {
+                log_info!("default gateway: {}", gw);
+                return Ok(gw.to_string());
+            }
+        }
+    }
+
+    Err("Could not determine default gateway".to_string())
+}
+
+/// Add a host route so SSH traffic bypasses the TUN device
+/// This must be called BEFORE inject_routes()
+fn add_host_route(host_ip: &str) -> Result<(), String> {
+    log_info!("adding host route for {} via default gateway", host_ip);
+
+    // First get the default gateway
+    let gateway = get_default_gateway()?;
+
+    // Add host route: route add -host <ip> <gateway>
+    let output = Command::new("route")
+        .args(["add", "-host", host_ip, &gateway])
+        .output()
+        .map_err(|e| format!("Failed to add host route: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // "File exists" means route already present — that's OK
+        if !stderr.contains("File exists") {
+            log_error!("host route add failed: {}", stderr.trim());
+            return Err(format!("Host route failed: {}", stderr.trim()));
+        }
+    }
+
+    log_info!("host route added: {} -> {}", host_ip, gateway);
+    Ok(())
+}
+
+/// Remove the host route for the SSH server
+fn remove_host_route(host_ip: &str) {
+    log_info!("removing host route for {}", host_ip);
+    let _ = Command::new("route")
+        .args(["delete", "-host", host_ip])
         .stderr(std::process::Stdio::null())
         .status();
 }

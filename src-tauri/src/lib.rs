@@ -128,7 +128,38 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
         Ok((tun_name, tun_fd)) => {
             emit_log(&app, &state.db, "info", &format!("TUN device {} created via helper", tun_name), Some(&profile_id)).await;
 
-            // Inject routes via helper
+            // Resolve SSH hostname to IP for host route
+            let ssh_host_ip = match tokio::net::lookup_host(format!("{}:{}", profile.host, profile.port)).await {
+                Ok(mut addrs) => {
+                    if let Some(addr) = addrs.next() {
+                        let ip = addr.ip().to_string();
+                        emit_log(&app, &state.db, "info", &format!("Resolved {} -> {}", profile.host, ip), Some(&profile_id)).await;
+                        Some(ip)
+                    } else {
+                        emit_log(&app, &state.db, "warn", &format!("No DNS result for {}", profile.host), Some(&profile_id)).await;
+                        None
+                    }
+                }
+                Err(e) => {
+                    emit_log(&app, &state.db, "warn", &format!("DNS lookup failed for {}: {}", profile.host, e), Some(&profile_id)).await;
+                    None
+                }
+            };
+
+            // Add host route for SSH server BEFORE split routes
+            // This prevents the SSH connection from routing through the TUN device
+            if let Some(ref ip) = ssh_host_ip {
+                match helper.add_host_route(ip) {
+                    Ok(()) => {
+                        emit_log(&app, &state.db, "info", &format!("Host route added for {}", ip), Some(&profile_id)).await;
+                    }
+                    Err(e) => {
+                        emit_log(&app, &state.db, "warn", &format!("Host route failed (non-fatal): {}", e), Some(&profile_id)).await;
+                    }
+                }
+            }
+
+            // Inject split routes via helper (captures all traffic except SSH host)
             let route_result = helper.add_route(&tun_name);
             match route_result {
                 Ok(()) => {
@@ -150,6 +181,7 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                     });
 
                     let mut tunnel = Tunnel::new(profile_id.clone(), stats.clone());
+                    tunnel.ssh_host_ip = ssh_host_ip.clone();
                     let config = TunnelConfig {
                         ssh_host: profile.host.clone(),
                         ssh_port: profile.port as u16,
@@ -227,6 +259,9 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                         Err(e) => {
                             emit_log(&app, &state.db, "error", &format!("Tunnel start failed: {}", e), Some(&profile_id)).await;
                             app.emit("connection-state", "disconnected").unwrap();
+                            if let Some(ref ip) = ssh_host_ip {
+                                let _ = helper.remove_host_route(ip);
+                            }
                             let _ = helper.cleanup_routes(&tun_name);
                             Err(e)
                         }
@@ -235,6 +270,9 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                 Err(e) => {
                     emit_log(&app, &state.db, "error", &format!("Route injection failed: {}", e), Some(&profile_id)).await;
                     app.emit("connection-state", "disconnected").unwrap();
+                    if let Some(ref ip) = ssh_host_ip {
+                        let _ = helper.remove_host_route(ip);
+                    }
                     Err(e)
                 }
             }
@@ -260,6 +298,11 @@ async fn disconnect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppSta
 
     if let Some(mut t) = tunnel {
         if let Some(ref mut h) = helper {
+            // Remove host route for SSH server first
+            if let Some(ref ip) = t.ssh_host_ip {
+                let _ = h.remove_host_route(ip);
+            }
+            // Then remove split routes
             if let Some(ref name) = t.tun_name {
                 let _ = h.cleanup_routes(name);
             }
