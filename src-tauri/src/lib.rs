@@ -135,14 +135,6 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                     emit_log(&app, &state.db, "info", "Routes injected via helper", Some(&profile_id)).await;
 
                     // Start tunnel with pre-created TUN
-                    let mut tunnel = Tunnel::new();
-                    let config = TunnelConfig {
-                        ssh_host: profile.host.clone(),
-                        ssh_port: profile.port as u16,
-                        ssh_username: username.clone(),
-                        ssh_password: password.unwrap_or_default(),
-                    };
-
                     // Create stats emitter - Arc shared with PacketRouter via Tunnel
                     let stats = std::sync::Arc::new(tunnel::ConnectionStats::new());
                     let stats_for_emit = stats.clone();
@@ -157,10 +149,75 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                         }
                     });
 
-                    match tunnel.start(config, tun_fd, &tun_name, stats.clone()).await {
+                    let mut tunnel = Tunnel::new(profile_id.clone(), stats.clone());
+                    let config = TunnelConfig {
+                        ssh_host: profile.host.clone(),
+                        ssh_port: profile.port as u16,
+                        ssh_username: username.clone(),
+                        ssh_password: password.unwrap_or_default(),
+                    };
+
+                    match tunnel.start(config, tun_fd, &tun_name).await {
                         Ok(()) => {
                             emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
                             app.emit("connection-state", "tunnel-active").unwrap();
+                            
+                            // Spawn reaper task to watch for disconnections and auto-reconnect
+                            let app_for_reaper = app.clone();
+                            let db_for_reaper = state.db.clone();
+                            let profile_id_for_reaper = profile_id.clone();
+                            
+                            tokio::spawn(async move {
+                                // Wait a bit for the router to start, then wait for it to exit
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                
+                                // Take the router handle from the tunnel
+                                let handle = {
+                                    let state_for_reaper = app_for_reaper.state::<AppState>();
+                                    let mut tunnel = state_for_reaper.tunnel.lock().await;
+                                    tunnel.as_mut().and_then(|t| t.router_handle.take())
+                                };
+                                
+                                if let Some(h) = handle {
+                                    let _ = h.await;
+                                }
+                                
+                                // Router exited - attempt reconnect with exponential backoff
+                                for attempt in 1u32..=10 {
+                                    let delay = std::time::Duration::from_secs(2u64.pow(attempt).min(60));
+                                    tokio::time::sleep(delay).await;
+                                    
+                                    app_for_reaper.emit("connection-state", "reconnecting").unwrap();
+                                    
+                                    let state_for_reaper = app_for_reaper.state::<AppState>();
+                                    let mut tunnel_lock = state_for_reaper.tunnel.lock().await;
+                                    let mut helper_lock = state_for_reaper.helper.lock().await;
+                                    
+                                    if let (Some(t), Some(ref mut h)) = (tunnel_lock.as_mut(), helper_lock.as_mut()) {
+                                        match t.reconnect(h).await {
+                                            Ok(()) => {
+                                                app_for_reaper.emit("connection-state", "tunnel-active").unwrap();
+                                                emit_log(&app_for_reaper, &db_for_reaper, "info", 
+                                                    "Reconnection successful", Some(&profile_id_for_reaper)).await;
+                                                return;
+                                            }
+                                            Err(e) => {
+                                                emit_log(&app_for_reaper, &db_for_reaper, "error",
+                                                    &format!("Reconnect attempt {} failed: {}", attempt, e),
+                                                    Some(&profile_id_for_reaper)).await;
+                                            }
+                                        }
+                                    } else {
+                                        // Tunnel or helper no longer available - give up
+                                        break;
+                                    }
+                                }
+                                
+                                app_for_reaper.emit("connection-state", "disconnected").unwrap();
+                                emit_log(&app_for_reaper, &db_for_reaper, "warn",
+                                    "Auto-reconnect gave up after 10 attempts", Some(&profile_id_for_reaper)).await;
+                            });
+                            
                             let mut tunnel_guard = state.tunnel.lock().await;
                             *tunnel_guard = Some(tunnel);
                             let mut helper_guard = state.helper.lock().await;

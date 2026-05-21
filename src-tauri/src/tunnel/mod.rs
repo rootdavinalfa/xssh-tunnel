@@ -9,11 +9,15 @@ use std::sync::Arc;
 
 use crate::error::AppError;
 use crate::ssh::{SshClient, SshConfig};
+use crate::helper::HelperClient;
 
 pub struct Tunnel {
-    ssh_client: Option<Arc<SshClient>>,
-    router_handle: Option<tokio::task::JoinHandle<Result<(), AppError>>>,
+    pub ssh_client: Option<Arc<SshClient>>,
+    pub router_handle: Option<tokio::task::JoinHandle<Result<(), AppError>>>,
     pub tun_name: Option<String>,
+    pub stats: Arc<ConnectionStats>,
+    pub config: Option<TunnelConfig>,
+    pub profile_id: String,
 }
 
 /// Thread-safe connection statistics.
@@ -56,11 +60,14 @@ pub struct ConnectionStatsSnapshot {
 }
 
 impl Tunnel {
-    pub fn new() -> Self {
+    pub fn new(profile_id: String, stats: Arc<ConnectionStats>) -> Self {
         Tunnel {
             ssh_client: None,
             router_handle: None,
             tun_name: None,
+            stats,
+            config: None,
+            profile_id,
         }
     }
 
@@ -69,8 +76,9 @@ impl Tunnel {
         config: TunnelConfig,
         tun_fd: std::os::unix::io::RawFd,
         tun_name: &str,
-        stats: Arc<ConnectionStats>,
     ) -> Result<(), AppError> {
+        self.config = Some(config.clone());
+
         let _tun = TunDevice::from_fd(tun_fd, tun_name)
             .map_err(|e| AppError::Tunnel(e))?;
 
@@ -82,7 +90,7 @@ impl Tunnel {
         };
         let ssh_client = Arc::new(SshClient::connect(ssh_config).await?);
 
-        let router = PacketRouter::new(ssh_client.clone(), stats, tun_fd);
+        let router = PacketRouter::new(ssh_client.clone(), self.stats.clone(), tun_fd);
         let router_handle = tokio::task::spawn_blocking(move || {
             router.blocking_read_loop()
         });
@@ -91,6 +99,17 @@ impl Tunnel {
         self.ssh_client = Some(ssh_client);
         self.router_handle = Some(router_handle);
 
+        Ok(())
+    }
+
+    pub async fn reconnect(&mut self, helper: &mut HelperClient) -> Result<(), AppError> {
+        let config = self.config.as_ref()
+            .ok_or_else(|| AppError::Tunnel("no stored config".to_string()))?
+            .clone();
+
+        let (tun_name, tun_fd) = helper.create_tun()?;
+        helper.add_route(&tun_name)?;
+        self.start(config, tun_fd, &tun_name).await?;
         Ok(())
     }
 
@@ -103,6 +122,7 @@ impl Tunnel {
     }
 }
 
+#[derive(Clone)]
 pub struct TunnelConfig {
     pub ssh_host: String,
     pub ssh_port: u16,
