@@ -214,6 +214,23 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                                     let _ = h.await;
                                 }
                                 
+                                // Router exited — SSH connection is dead.
+                                // IMMEDIATELY remove split routes to restore normal network access.
+                                // Without this, all traffic goes into the dead TUN device.
+                                {
+                                    let state_for_reaper = app_for_reaper.state::<AppState>();
+                                    let mut helper_lock = state_for_reaper.helper.lock().await;
+                                    let tunnel_lock = state_for_reaper.tunnel.lock().await;
+                                    if let (Some(ref mut h), Some(ref t)) = (helper_lock.as_mut(), tunnel_lock.as_ref()) {
+                                        if let Some(ref ip) = t.ssh_host_ip {
+                                            let _ = h.remove_host_route(ip);
+                                        }
+                                        if let Some(ref name) = t.tun_name {
+                                            let _ = h.cleanup_routes(name);
+                                        }
+                                    }
+                                }
+
                                 // Router exited - attempt reconnect with exponential backoff
                                 for attempt in 1u32..=10 {
                                     let delay = std::time::Duration::from_secs(2u64.pow(attempt).min(60));

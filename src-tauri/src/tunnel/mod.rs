@@ -110,6 +110,17 @@ impl Tunnel {
             .clone();
 
         let (tun_name, tun_fd) = helper.create_tun()?;
+
+        // Resolve SSH hostname and add host route before split routes
+        let host_ip = match tokio::net::lookup_host(format!("{}:{}", config.ssh_host, config.ssh_port)).await {
+            Ok(mut addrs) => addrs.next().map(|addr| addr.ip().to_string()),
+            Err(_) => None,
+        };
+        if let Some(ref ip) = host_ip {
+            let _ = helper.add_host_route(ip);
+        }
+        self.ssh_host_ip = host_ip;
+
         helper.add_route(&tun_name)?;
         self.start(config, tun_fd, &tun_name).await?;
         Ok(())

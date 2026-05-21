@@ -255,8 +255,18 @@ fn inject_routes(tun_name: &str) -> Result<(), String> {
         log_warn!("ifconfig {}: {}", tun_name, stderr.trim());
     }
 
+    // Remove existing split routes first (idempotent — safe if they don't exist)
+    let _ = Command::new("route")
+        .args(["delete", "-net", "0.0.0.0/1"])
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = Command::new("route")
+        .args(["delete", "-net", "128.0.0.0/1"])
+        .stderr(std::process::Stdio::null())
+        .status();
+
     // Add split default routes through the TUN interface
-    for (i, network) in ["0.0.0.0/1", "128.0.0.0/1"].iter().enumerate() {
+    for network in ["0.0.0.0/1", "128.0.0.0/1"] {
         log_debug!("route add -net {} -interface {}", network, tun_name);
         let output = Command::new("route")
             .args(["add", "-net", network, "-interface", tun_name])
@@ -269,12 +279,10 @@ fn inject_routes(tun_name: &str) -> Result<(), String> {
         if !output.status.success() || !output.stderr.is_empty() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
             log_error!("route add {} failed: {}", network, stderr.trim());
-            if i == 0 {
-                return Err(format!("Route failed ({}): {}", network, stderr.trim()));
-            } else {
-                let _ = Command::new("route").args(["delete", "-net", "0.0.0.0/1"]).status();
-                return Err(format!("Route failed ({}): {}", network, stderr.trim()));
-            }
+            // Rollback: remove any routes we just added
+            let _ = Command::new("route").args(["delete", "-net", "0.0.0.0/1"]).status();
+            let _ = Command::new("route").args(["delete", "-net", "128.0.0.0/1"]).status();
+            return Err(format!("Route failed ({}): {}", network, stderr.trim()));
         }
     }
 
