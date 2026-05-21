@@ -168,8 +168,14 @@ fn inject_routes(tun_name: &str) -> Result<(), String> {
 }
 
 fn cleanup_routes(_tun_name: &str) {
-    let _ = Command::new("route").args(["delete", "-net", "0.0.0.0/1"]).status();
-    let _ = Command::new("route").args(["delete", "-net", "128.0.0.0/1"]).status();
+    let _ = Command::new("route")
+        .args(["delete", "-net", "0.0.0.0/1"])
+        .stderr(std::process::Stdio::null())
+        .status();
+    let _ = Command::new("route")
+        .args(["delete", "-net", "128.0.0.0/1"])
+        .stderr(std::process::Stdio::null())
+        .status();
 }
 
 fn send_fd(stream: &UnixStream, fd: RawFd) {
