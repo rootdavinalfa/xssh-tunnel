@@ -7,6 +7,10 @@
     entries?: LogEntry[];
   } = $props();
 
+  function formatTime(ts: string): string {
+    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
   function levelClass(level: string): string {
     switch (level) {
       case 'error': return 'text-red-600';
@@ -32,7 +36,7 @@
       {#each entries.slice(0, 10) as entry (entry.id)}
         <div class="px-4 py-2 flex gap-3 items-start">
           <span class="text-xs text-gray-400 font-mono whitespace-nowrap">
-            {entry.timestamp.slice(11, 19)}
+            {formatTime(entry.timestamp)}
           </span>
           <span class="text-xs font-medium uppercase w-10 {levelClass(entry.level)}">
             {entry.level}

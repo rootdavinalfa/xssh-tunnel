@@ -21,6 +21,10 @@
     return entries;
   });
 
+  function formatTime(ts: string): string {
+    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
   function levelClass(level: string): string {
     switch (level) {
       case 'error': return 'text-red-600';
@@ -37,18 +41,15 @@
   }
 
   onMount(() => {
-    (async () => {
-      try {
-        const logs = await getLogs();
-        logEntries.set(logs);
-      } catch (e) {
-        console.error('Failed to load logs:', e);
-      } finally {
-        loading = false;
-      }
-    })();
-    const unlistenPromise = syncLogs();
-    return () => { unlistenPromise.then(fn => fn()); };
+    getLogs().then(logs => {
+      logEntries.set(logs);
+      loading = false;
+    }).catch(e => {
+      console.error('Failed to load logs:', e);
+      loading = false;
+    });
+    const unlisten = syncLogs();
+    return () => { unlisten.then(fn => fn()); };
   });
 </script>
 
@@ -98,7 +99,7 @@
       {#each filteredEntries as entry (entry.id)}
         <div class="px-4 py-3 flex gap-4 items-start">
           <span class="text-sm text-gray-400 font-mono whitespace-nowrap">
-            {entry.timestamp.slice(11, 19)}
+            {formatTime(entry.timestamp)}
           </span>
           <span class="text-xs font-medium uppercase w-12 {levelClass(entry.level)}">
             {entry.level}
