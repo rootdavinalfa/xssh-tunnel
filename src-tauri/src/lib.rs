@@ -5,6 +5,7 @@ use tauri::{Emitter, Manager};
 pub mod crypto;
 pub mod db;
 pub mod error;
+pub mod helper;
 pub mod logs;
 pub mod profiles;
 pub mod ssh;

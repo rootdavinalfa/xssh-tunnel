@@ -7370,7 +7370,9 @@ name = "xssh-tunnel"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "cc",
  "chrono",
+ "core-foundation",
  "futures",
  "ring",
  "russh",
