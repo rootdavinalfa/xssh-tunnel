@@ -45,6 +45,7 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-shell": "^2.0.0"
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "date-fns": "^4.2.1"
   }
 }

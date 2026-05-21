@@ -4,6 +4,7 @@
   import { logEntries, clearStore } from '$lib/stores/logs';
   import { getLogs, clearLogs, syncLogs } from '$lib/tauri';
   import { onMount } from 'svelte';
+  import { format } from 'date-fns';
 
   let filterLevel = $state('');
   let searchQuery = $state('');
@@ -22,7 +23,7 @@
   });
 
   function formatTime(ts: string): string {
-    return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    return format(new Date(ts), 'HH:mm:ss');
   }
 
   function levelClass(level: string): string {
