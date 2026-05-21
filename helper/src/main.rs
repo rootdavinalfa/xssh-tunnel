@@ -59,15 +59,13 @@ struct ResponseResult {
     gateway: Option<String>,
 }
 
-fn handle_connection(mut stream: UnixStream) {
-    let mut tun_device: Option<(String, RawFd)> = None;
-
+fn handle_connection(mut stream: UnixStream, tun_device: &mut Option<(String, RawFd)>) {
     loop {
         let mut line = String::new();
         loop {
             let mut byte = [0u8; 1];
             if stream.read(&mut byte).unwrap_or(0) == 0 {
-                // Client disconnected - cleanup
+                // Client disconnected - cleanup routes but keep TUN device alive for reuse
                 log_info!("client disconnected");
                 if let Some((ref name, _)) = tun_device {
                     log_info!("cleaning up routes for {}", name);
@@ -93,24 +91,40 @@ fn handle_connection(mut stream: UnixStream) {
         log_debug!("received command: {}", req.cmd);
         match req.cmd.as_str() {
             "create_tun" => {
-                match create_tun_device() {
-                    Ok((name, fd)) => {
-                        // Send fd FIRST, then JSON response
-                        send_fd(&stream, fd);
-                        let resp = Response {
-                            ok: true,
-                            result: Some(ResponseResult { tun_name: Some(name.clone()), gateway: None }),
-                            error: None,
-                        };
-                        let resp_str = format!("{}\n", serde_json::to_string(&resp).unwrap());
-                        if stream.write_all(resp_str.as_bytes()).is_err() {
-                            return;
-                        }
-                        tun_device = Some((name, fd));
+                // Reuse existing TUN device if we already have one
+                if let Some((ref name, ref fd)) = tun_device {
+                    log_info!("reusing existing TUN device {}", name);
+                    // sendmsg SCM_RIGHTS duplicates the fd into the client — our fd stays open
+                    send_fd(&stream, *fd);
+                    let resp = Response {
+                        ok: true,
+                        result: Some(ResponseResult { tun_name: Some(name.clone()), gateway: None }),
+                        error: None,
+                    };
+                    let resp_str = format!("{}\n", serde_json::to_string(&resp).unwrap());
+                    if stream.write_all(resp_str.as_bytes()).is_err() {
+                        return;
                     }
-                    Err(e) => {
-                        let resp = Response { ok: false, result: None, error: Some(e) };
-                        let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                } else {
+                    match create_tun_device() {
+                        Ok((name, fd)) => {
+                            // Send fd FIRST, then JSON response
+                            send_fd(&stream, fd);
+                            let resp = Response {
+                                ok: true,
+                                result: Some(ResponseResult { tun_name: Some(name.clone()), gateway: None }),
+                                error: None,
+                            };
+                            let resp_str = format!("{}\n", serde_json::to_string(&resp).unwrap());
+                            if stream.write_all(resp_str.as_bytes()).is_err() {
+                                return;
+                            }
+                            *tun_device = Some((name, fd));
+                        }
+                        Err(e) => {
+                            let resp = Response { ok: false, result: None, error: Some(e) };
+                            let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                        }
                     }
                 }
             }
@@ -403,14 +417,20 @@ fn main() {
     let _ = fs::set_permissions(SOCKET_PATH, fs::Permissions::from_mode(0o777));
     log_debug!("socket permissions set to 0777");
 
-    log_info!("waiting for client connection...");
-    if let Ok((stream, _)) = listener.accept() {
-        log_info!("client connected");
-        handle_connection(stream);
-    } else {
-        log_error!("failed to accept connection");
+    // Accept multiple client connections — TUN device persists across connections
+    let mut tun_device: Option<(String, RawFd)> = None;
+    loop {
+        log_info!("waiting for client connection...");
+        if let Ok((stream, _)) = listener.accept() {
+            log_info!("client connected");
+            handle_connection(stream, &mut tun_device);
+            log_info!("client session ended, keeping daemon alive for new connections");
+        } else {
+            log_error!("failed to accept connection");
+        }
     }
 
-    let _ = fs::remove_file(SOCKET_PATH);
-    log_info!("daemon exiting");
+    // Cleanup on shutdown (unreachable for now — daemon runs until killed)
+    // let _ = fs::remove_file(SOCKET_PATH);
+    // log_info!("daemon exiting");
 }
