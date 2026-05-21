@@ -41,7 +41,6 @@
       {:else}
         <Button
           onclick={onDisconnect}
-          disabled={loading}
           variant="destructive"
           size="sm"
         >
