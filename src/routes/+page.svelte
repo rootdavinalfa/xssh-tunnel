@@ -102,9 +102,12 @@
   function handleEditClick(id: string) {
     if ($connectionState !== 'disconnected') {
       showConfirmDialog(
-        'Connected Tunnel Detected',
-        'A tunnel is currently connected. Edit this profile? The tunnel will remain active.',
-        () => {
+        'Disconnect to Edit?',
+        'A tunnel is currently connected. The tunnel will be disconnected before editing.',
+        async () => {
+          try {
+            await disconnectTunnel();
+          } catch (e) { /* proceed anyway */ }
           editProfileId = id;
           connFormMode = 'edit';
           showConnForm = true;
