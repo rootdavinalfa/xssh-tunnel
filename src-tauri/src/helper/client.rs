@@ -1,6 +1,7 @@
 use std::io::{Read, Write};
 use std::os::unix::io::{RawFd};
 use std::os::unix::net::UnixStream;
+use std::time::Duration;
 
 use crate::error::AppError;
 
@@ -14,6 +15,8 @@ impl HelperClient {
     pub fn connect() -> Result<Self, AppError> {
         let stream = UnixStream::connect(SOCKET_PATH)
             .map_err(|e| AppError::Tunnel(format!("Failed to connect to helper: {}", e)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|e| AppError::Tunnel(format!("Failed to set read timeout: {}", e)))?;
         Ok(HelperClient { stream })
     }
 

@@ -1,9 +1,13 @@
 use std::future::Future;
 use std::sync::Arc;
+use tokio::time::timeout;
 
 use russh::*;
 
 use crate::error::AppError;
+
+// Timeout for SSH connection establishment (TCP connect + handshake)
+const SSH_CONNECT_TIMEOUT_SECS: u64 = 15;
 
 pub struct SshConfig {
     pub host: String,
@@ -38,14 +42,21 @@ impl SshClient {
         let client_config = Arc::new(client_config);
 
         let handler = ClientHandler;
-        let mut session = client::connect(client_config, (config.host.as_str(), config.port), handler)
-            .await
-            .map_err(|e| AppError::Ssh(format!("Connection failed: {}", e)))?;
+        let mut session = timeout(
+            std::time::Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS),
+            client::connect(client_config, (config.host.as_str(), config.port), handler),
+        )
+        .await
+        .map_err(|_| AppError::Ssh(format!("Connection timeout ({}s)", SSH_CONNECT_TIMEOUT_SECS)))?
+        .map_err(|e| AppError::Ssh(format!("Connection failed: {}", e)))?;
 
-        let auth_res = session
-            .authenticate_password(config.username, config.password)
-            .await
-            .map_err(|e| AppError::Ssh(format!("Auth failed: {}", e)))?;
+        let auth_res = timeout(
+            std::time::Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS),
+            session.authenticate_password(config.username, config.password),
+        )
+        .await
+        .map_err(|_| AppError::Ssh("Authentication timeout".to_string()))?
+        .map_err(|e| AppError::Ssh(format!("Auth failed: {}", e)))?;
 
         if !auth_res.success() {
             return Err(AppError::Ssh("Password authentication failed".to_string()));
