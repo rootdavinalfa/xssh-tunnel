@@ -56,6 +56,15 @@ impl HelperClient {
         Ok(())
     }
 
+    pub fn send_ping(&mut self) -> Result<(), AppError> {
+        self.send_command(r#"{"cmd":"ping"}"#)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            return Err(AppError::Tunnel("ping failed".to_string()));
+        }
+        Ok(())
+    }
+
     fn send_command(&mut self, cmd: &str) -> Result<(), AppError> {
         let msg = format!("{}\n", cmd);
         self.stream.write_all(msg.as_bytes())

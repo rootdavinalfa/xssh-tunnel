@@ -14,7 +14,6 @@ pub struct Tunnel {
     ssh_client: Option<Arc<SshClient>>,
     router_handle: Option<tokio::task::JoinHandle<Result<(), AppError>>>,
     pub tun_name: Option<String>,
-    pub stats: Arc<ConnectionStats>,
 }
 
 /// Thread-safe connection statistics.
@@ -42,6 +41,18 @@ impl ConnectionStats {
     pub fn bytes_down(&self) -> u64 {
         self.down.load(std::sync::atomic::Ordering::Relaxed)
     }
+    pub fn snapshot(&self) -> ConnectionStatsSnapshot {
+        ConnectionStatsSnapshot {
+            bytes_up: self.bytes_up(),
+            bytes_down: self.bytes_down(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConnectionStatsSnapshot {
+    pub bytes_up: u64,
+    pub bytes_down: u64,
 }
 
 impl Tunnel {
@@ -50,7 +61,6 @@ impl Tunnel {
             ssh_client: None,
             router_handle: None,
             tun_name: None,
-            stats: Arc::new(ConnectionStats::new()),
         }
     }
 
@@ -59,8 +69,9 @@ impl Tunnel {
         config: TunnelConfig,
         tun_fd: std::os::unix::io::RawFd,
         tun_name: &str,
+        stats: Arc<ConnectionStats>,
     ) -> Result<(), AppError> {
-        let tun = TunDevice::from_fd(tun_fd, tun_name)
+        let _tun = TunDevice::from_fd(tun_fd, tun_name)
             .map_err(|e| AppError::Tunnel(e))?;
 
         let ssh_config = SshConfig {
@@ -71,7 +82,6 @@ impl Tunnel {
         };
         let ssh_client = Arc::new(SshClient::connect(ssh_config).await?);
 
-        let stats = self.stats.clone();
         let router = PacketRouter::new(ssh_client.clone(), stats, tun_fd);
         let router_handle = tokio::task::spawn_blocking(move || {
             router.blocking_read_loop()

@@ -143,7 +143,21 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
                         ssh_password: password.unwrap_or_default(),
                     };
 
-                    match tunnel.start(config, tun_fd, &tun_name).await {
+                    // Create stats emitter - Arc shared with PacketRouter via Tunnel
+                    let stats = std::sync::Arc::new(tunnel::ConnectionStats::new());
+                    let stats_for_emit = stats.clone();
+                    let app_for_stats = app.clone();
+
+                    // Emit stats every 1 second
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                            let snapshot = stats_for_emit.snapshot();
+                            let _ = app_for_stats.emit("connection-stats", &snapshot);
+                        }
+                    });
+
+                    match tunnel.start(config, tun_fd, &tun_name, stats.clone()).await {
                         Ok(()) => {
                             emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
                             app.emit("connection-state", "tunnel-active").unwrap();
