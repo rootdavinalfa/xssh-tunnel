@@ -12,6 +12,29 @@ use std::os::unix::fs::PermissionsExt;
 const SOCKET_PATH: &str = "/var/run/xyz.dvnlabs.xsshtunnel.sock";
 const TUN_MTU: u16 = 1500;
 
+// Logging: debug builds show all messages, release builds show info+ only
+macro_rules! log_debug {
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        eprintln!("[helper][debug] {}", format!($($arg)*));
+    };
+}
+macro_rules! log_info {
+    ($($arg:tt)*) => {
+        eprintln!("[helper][info] {}", format!($($arg)*));
+    };
+}
+macro_rules! log_warn {
+    ($($arg:tt)*) => {
+        eprintln!("[helper][warn] {}", format!($($arg)*));
+    };
+}
+macro_rules! log_error {
+    ($($arg:tt)*) => {
+        eprintln!("[helper][error] {}", format!($($arg)*));
+    };
+}
+
 #[derive(Deserialize)]
 struct Request {
     cmd: String,
@@ -42,7 +65,9 @@ fn handle_connection(mut stream: UnixStream) {
             let mut byte = [0u8; 1];
             if stream.read(&mut byte).unwrap_or(0) == 0 {
                 // Client disconnected - cleanup
+                log_info!("client disconnected");
                 if let Some((ref name, _)) = tun_device {
+                    log_info!("cleaning up routes for {}", name);
                     cleanup_routes(name);
                 }
                 return;
@@ -62,6 +87,7 @@ fn handle_connection(mut stream: UnixStream) {
             }
         };
 
+        log_debug!("received command: {}", req.cmd);
         match req.cmd.as_str() {
             "create_tun" => {
                 match create_tun_device() {
@@ -129,11 +155,15 @@ fn handle_connection(mut stream: UnixStream) {
 }
 
 fn create_tun_device() -> Result<(String, RawFd), String> {
+    log_debug!("creating TUN device with MTU {}", TUN_MTU);
     let mut config = tun::Configuration::default();
     config.mtu(TUN_MTU).up();
 
     let device = tun::create(&config)
-        .map_err(|e| format!("Failed to create TUN device: {}", e))?;
+        .map_err(|e| {
+            log_error!("TUN creation failed: {}", e);
+            format!("Failed to create TUN device: {}", e)
+        })?;
 
     let name = device.tun_name()
         .map_err(|e| format!("Failed to get TUN name: {}", e))?;
@@ -141,18 +171,25 @@ fn create_tun_device() -> Result<(String, RawFd), String> {
 
     std::mem::forget(device);
 
+    log_info!("TUN device {} created", name);
     Ok((name, fd))
 }
 
 fn inject_routes(tun_name: &str) -> Result<(), String> {
+    log_info!("injecting routes via {}", tun_name);
     let status = Command::new("route")
         .args(["add", "-net", "0.0.0.0/1", "-interface", tun_name])
         .status()
-        .map_err(|e| format!("Failed to add route: {}", e))?;
+        .map_err(|e| {
+            log_error!("route add failed: {}", e);
+            format!("Failed to add route: {}", e)
+        })?;
 
     if !status.success() {
+        log_error!("route add 0.0.0.0/1 returned non-zero");
         return Err("Failed to add default route (0.0.0.0/1)".to_string());
     }
+    log_debug!("route 0.0.0.0/1 added");
 
     let status = Command::new("route")
         .args(["add", "-net", "128.0.0.0/1", "-interface", tun_name])
@@ -161,13 +198,17 @@ fn inject_routes(tun_name: &str) -> Result<(), String> {
 
     if !status.success() {
         let _ = Command::new("route").args(["delete", "-net", "0.0.0.0/1"]).status();
+        log_error!("route add 128.0.0.0/1 returned non-zero");
         return Err("Failed to add default route (128.0.0.0/1)".to_string());
     }
+    log_debug!("route 128.0.0.0/1 added");
+    log_info!("routes injected successfully");
 
     Ok(())
 }
 
 fn cleanup_routes(_tun_name: &str) {
+    log_info!("removing routes");
     let _ = Command::new("route")
         .args(["delete", "-net", "0.0.0.0/1"])
         .stderr(std::process::Stdio::null())
@@ -223,16 +264,25 @@ fn send_fd(stream: &UnixStream, fd: RawFd) {
 }
 
 fn main() {
+    log_info!("daemon starting");
     let _ = fs::remove_file(SOCKET_PATH);
+    log_debug!("stale socket removed");
 
     let listener = UnixListener::bind(SOCKET_PATH)
         .expect("Failed to bind socket");
+    log_info!("listening on {}", SOCKET_PATH);
 
     let _ = fs::set_permissions(SOCKET_PATH, fs::Permissions::from_mode(0o777));
+    log_debug!("socket permissions set to 0777");
 
+    log_info!("waiting for client connection...");
     if let Ok((stream, _)) = listener.accept() {
+        log_info!("client connected");
         handle_connection(stream);
+    } else {
+        log_error!("failed to accept connection");
     }
 
     let _ = fs::remove_file(SOCKET_PATH);
+    log_info!("daemon exiting");
 }
