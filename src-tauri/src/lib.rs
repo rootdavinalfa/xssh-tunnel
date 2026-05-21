@@ -10,10 +10,12 @@ pub mod logs;
 pub mod profiles;
 pub mod ssh;
 pub mod tunnel;
+pub mod xpc;
 
 use crypto::keychain::get_or_create_master_key;
 use db::{init_db, DbPool};
 use error::AppError;
+use helper::HelperClient;
 use logs::LogEntry;
 use profiles::{create_profile, update_profile, get_profiles, get_profile_by_id, delete_profile, CreateProfileRequest, UpdateProfileRequest};
 use ssh::config_parser::{parse_ssh_config, SshConfigEntry, ParseResult};
@@ -23,6 +25,7 @@ struct AppState {
     db: DbPool,
     master_key: [u8; 32],
     tunnel: Mutex<Option<Tunnel>>,
+    helper: Mutex<Option<HelperClient>>,
 }
 
 async fn emit_log(
@@ -83,7 +86,6 @@ async fn update_profile_cmd(
 // Tunnel commands (updated to use profiles)
 #[tauri::command]
 async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>, profile_id: String) -> Result<String, AppError> {
-    // Check if already connected (drop guard immediately)
     {
         let tunnel_guard = state.tunnel.lock().await;
         if tunnel_guard.is_some() {
@@ -93,10 +95,8 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
 
     let profile = get_profile_by_id(&state.db, &profile_id).await?;
     emit_log(&app, &state.db, "info", &format!("Connecting to {}...", profile.host), Some(&profile_id)).await;
-
     app.emit("connection-state", "connecting").unwrap();
 
-    // Decrypt credentials based on auth type
     let (username, password) = match profile.auth_type.as_str() {
         "password" => {
             let pass = profile.password_enc
@@ -111,28 +111,45 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
     emit_log(&app, &state.db, "info", "SSH authentication successful", Some(&profile_id)).await;
     app.emit("connection-state", "authenticating").unwrap();
 
+    // Connect to privileged helper
+    let mut helper = HelperClient::connect()
+        .map_err(|_| AppError::Tunnel(
+            "Privileged Helper not available. Go to Settings to install.".to_string()
+        ))?;
+
+    // Create TUN device via helper
+    let (tun_name, tun_fd) = helper.create_tun()
+        .map_err(|e| AppError::Tunnel(e))?;
+    emit_log(&app, &state.db, "info", &format!("TUN device {} created via helper", tun_name), Some(&profile_id)).await;
+
+    // Inject routes via helper
+    helper.add_route(&tun_name)
+        .map_err(|e| AppError::Tunnel(e))?;
+    emit_log(&app, &state.db, "info", "Routes injected via helper", Some(&profile_id)).await;
+
+    // Start tunnel with pre-created TUN
+    let mut tunnel = Tunnel::new();
     let config = TunnelConfig {
-        ssh_host: profile.host,
+        ssh_host: profile.host.clone(),
         ssh_port: profile.port as u16,
-        ssh_username: username,
+        ssh_username: username.clone(),
         ssh_password: password.unwrap_or_default(),
     };
 
-    let mut tunnel = Tunnel::new();
-    // Wrap in a block to catch connection errors and reset state
-    match tunnel.start(config).await {
+    match tunnel.start(config, tun_fd, &tun_name).await {
         Ok(()) => {
             emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
             app.emit("connection-state", "tunnel-active").unwrap();
-
-            // Store tunnel (acquire lock again)
             let mut tunnel_guard = state.tunnel.lock().await;
             *tunnel_guard = Some(tunnel);
+            let mut helper_guard = state.helper.lock().await;
+            *helper_guard = Some(helper);
             Ok("Connected".to_string())
         }
         Err(e) => {
             emit_log(&app, &state.db, "error", &format!("Connection failed: {}", e), Some(&profile_id)).await;
             app.emit("connection-state", "disconnected").unwrap();
+            let _ = helper.cleanup_routes(&tun_name).ok();
             Err(e)
         }
     }
@@ -140,14 +157,22 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
 
 #[tauri::command]
 async fn disconnect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<String, AppError> {
-    // Take tunnel from state (drop guard immediately)
     let tunnel = {
         let mut tunnel_guard = state.tunnel.lock().await;
         tunnel_guard.take()
     };
-    
-    if let Some(mut tunnel) = tunnel {
-        tunnel.stop().await?;
+    let mut helper = {
+        let mut helper_guard = state.helper.lock().await;
+        helper_guard.take()
+    };
+
+    if let Some(mut t) = tunnel {
+        if let Some(ref mut h) = helper {
+            if let Some(ref name) = t.tun_name {
+                let _ = h.cleanup_routes(name);
+            }
+        }
+        t.stop().await?;
         emit_log(&app, &state.db, "info", "Disconnected from tunnel", None).await;
         app.emit("connection-state", "disconnected").unwrap();
         Ok("Disconnected".to_string())
@@ -226,6 +251,35 @@ async fn import_ssh_config_cmd(
 }
 
 #[tauri::command]
+async fn get_helper_status_cmd() -> Result<helper::HelperStatus, AppError> {
+    helper::get_status()
+        .map_err(|e| AppError::Tunnel(format!("Failed to get helper status: {}", e)))
+}
+
+#[tauri::command]
+async fn install_helper_cmd() -> Result<(), AppError> {
+    let bundle_path = std::env::current_exe()
+        .map_err(|e| AppError::Tunnel(format!("Failed to get app path: {}", e)))?
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|p| p.join("Library").join("LaunchServices").join("xssh-tunnel-helper"))
+        .ok_or_else(|| AppError::Tunnel("Failed to resolve helper path".to_string()))?;
+
+    let path_str = bundle_path.to_str()
+        .ok_or_else(|| AppError::Tunnel("Invalid helper path".to_string()))?;
+
+    helper::install(path_str)
+        .map_err(|e| AppError::Tunnel(format!("Failed to install helper: {}", e)))
+}
+
+#[tauri::command]
+async fn uninstall_helper_cmd() -> Result<(), AppError> {
+    helper::uninstall()
+        .map_err(|e| AppError::Tunnel(format!("Failed to uninstall helper: {}", e)))
+}
+
+#[tauri::command]
 fn greet(name: String) -> String {
     format!("Hello, {}! You've been greeted from Rust.", name)
 }
@@ -248,6 +302,9 @@ pub fn run() {
             clear_logs_cmd,
             parse_ssh_config_cmd,
             import_ssh_config_cmd,
+            get_helper_status_cmd,
+            install_helper_cmd,
+            uninstall_helper_cmd,
         ])
         .setup(|app| {
             let app_handle = app.handle();
@@ -293,6 +350,7 @@ pub fn run() {
                 db,
                 master_key,
                 tunnel: Mutex::new(None),
+                helper: Mutex::new(None),
             });
 
             // Prune old logs
