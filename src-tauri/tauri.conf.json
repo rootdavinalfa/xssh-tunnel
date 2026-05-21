@@ -26,6 +26,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "externalBin": [
+      "../helper/target/release/xssh-tunnel-helper"
+    ]
   }
 }
