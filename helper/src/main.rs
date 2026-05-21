@@ -178,30 +178,44 @@ fn create_tun_device() -> Result<(String, RawFd), String> {
 
 fn inject_routes(tun_name: &str) -> Result<(), String> {
     log_info!("injecting routes via {}", tun_name);
-    log_debug!("route add -net 0.0.0.0/1 -interface {}", tun_name);
-    let status = Command::new("route")
-        .args(["add", "-net", "0.0.0.0/1", "-interface", tun_name])
-        .status()
-        .map_err(|e| {
-            log_error!("route add failed: {}", e);
-            format!("Failed to add route: {}", e)
-        })?;
 
-    if !status.success() {
-        log_error!("route add 0.0.0.0/1 returned non-zero");
-        return Err("Failed to add default route (0.0.0.0/1)".to_string());
-    }
-    log_debug!("route add -net 128.0.0.0/1 -interface {}", tun_name);
-    let status = Command::new("route")
-        .args(["add", "-net", "128.0.0.0/1", "-interface", tun_name])
-        .status()
-        .map_err(|e| format!("Failed to add route: {}", e))?;
+    // TUN interface needs a moment to settle and an IP address
+    std::thread::sleep(std::time::Duration::from_millis(200));
 
-    if !status.success() {
-        let _ = Command::new("route").args(["delete", "-net", "0.0.0.0/1"]).status();
-        log_error!("route add 128.0.0.0/1 returned non-zero");
-        return Err("Failed to add default route (128.0.0.0/1)".to_string());
+    // Assign IP to the TUN interface (required before adding routes on macOS)
+    let ip_config = Command::new("ifconfig")
+        .args([tun_name, "10.0.0.1", "10.0.0.2", "up"])
+        .output()
+        .map_err(|e| format!("Failed to configure TUN IP: {}", e))?;
+
+    if !ip_config.status.success() {
+        let stderr = String::from_utf8_lossy(&ip_config.stderr);
+        log_warn!("ifconfig {}: {}", tun_name, stderr.trim());
     }
+
+    // Add split default routes through the TUN interface
+    for (i, network) in ["0.0.0.0/1", "128.0.0.0/1"].iter().enumerate() {
+        log_debug!("route add -net {} -interface {}", network, tun_name);
+        let output = Command::new("route")
+            .args(["add", "-net", network, "-interface", tun_name])
+            .output()
+            .map_err(|e| {
+                log_error!("route add failed: {}", e);
+                format!("Failed to add route: {}", e)
+            })?;
+
+        if !output.status.success() || !output.stderr.is_empty() {
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            log_error!("route add {} failed: {}", network, stderr.trim());
+            if i == 0 {
+                return Err(format!("Route failed ({}): {}", network, stderr.trim()));
+            } else {
+                let _ = Command::new("route").args(["delete", "-net", "0.0.0.0/1"]).status();
+                return Err(format!("Route failed ({}): {}", network, stderr.trim()));
+            }
+        }
+    }
+
     log_info!("routes injected successfully");
     Ok(())
 }
