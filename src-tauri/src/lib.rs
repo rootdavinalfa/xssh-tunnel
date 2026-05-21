@@ -10,7 +10,6 @@ pub mod logs;
 pub mod profiles;
 pub mod ssh;
 pub mod tunnel;
-pub mod xpc;
 
 use crypto::keychain::get_or_create_master_key;
 use db::{init_db, DbPool};
@@ -118,13 +117,11 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
         ))?;
 
     // Create TUN device via helper
-    let (tun_name, tun_fd) = helper.create_tun()
-        .map_err(|e| AppError::Tunnel(e))?;
+    let (tun_name, tun_fd) = helper.create_tun()?;
     emit_log(&app, &state.db, "info", &format!("TUN device {} created via helper", tun_name), Some(&profile_id)).await;
 
     // Inject routes via helper
-    helper.add_route(&tun_name)
-        .map_err(|e| AppError::Tunnel(e))?;
+    helper.add_route(&tun_name)?;
     emit_log(&app, &state.db, "info", "Routes injected via helper", Some(&profile_id)).await;
 
     // Start tunnel with pre-created TUN

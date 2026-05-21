@@ -1,6 +1,7 @@
 mod client;
 
 use std::os::raw::c_void;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 
@@ -12,14 +13,59 @@ pub struct HelperStatus {
     pub running: bool,
 }
 
-#[link(name = "ServiceManagement", kind = "framework")]
+struct SmAppFunctions {
+    register: unsafe fn(*const c_void, *const c_void) -> bool,
+    unregister: unsafe fn(*const c_void),
+    copy_status: unsafe fn(*const c_void) -> *const c_void,
+}
+
+static SMAPP_FUNCTIONS: OnceLock<Result<SmAppFunctions, String>> = OnceLock::new();
+
+fn get_smapp_fns() -> Result<&'static SmAppFunctions, String> {
+    match SMAPP_FUNCTIONS.get_or_init(|| load_smapp_fns()) {
+        Ok(fns) => Ok(fns),
+        Err(e) => Err(e.clone()),
+    }
+}
+
+fn load_smapp_fns() -> Result<SmAppFunctions, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("SMAppService is only available on macOS".to_string());
+    }
+
+    #[cfg(target_os = "macos")]
+    unsafe {
+        use std::ffi::CStr;
+        let handle = libc::dlopen(
+            CStr::from_bytes_with_nul(b"/System/Library/Frameworks/ServiceManagement.framework/ServiceManagement\0")
+                .unwrap()
+                .as_ptr(),
+            libc::RTLD_LAZY,
+        );
+        if handle.is_null() {
+            return Err("ServiceManagement framework not available".to_string());
+        }
+
+        let register = libc::dlsym(handle, CStr::from_bytes_with_nul(b"SMAppServiceRegister\0").unwrap().as_ptr());
+        let unregister = libc::dlsym(handle, CStr::from_bytes_with_nul(b"SMAppServiceUnregister\0").unwrap().as_ptr());
+        let copy_status = libc::dlsym(handle, CStr::from_bytes_with_nul(b"SMAppServiceCopyStatus\0").unwrap().as_ptr());
+
+        if register.is_null() || unregister.is_null() || copy_status.is_null() {
+            return Err("SMAppService functions not found (requires macOS 13+)".to_string());
+        }
+
+        Ok(SmAppFunctions {
+            register: std::mem::transmute(register),
+            unregister: std::mem::transmute(unregister),
+            copy_status: std::mem::transmute(copy_status),
+        })
+    }
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 #[link(name = "Security", kind = "framework")]
 extern "C" {
-    fn SMAppServiceRegister(service_name: *const c_void, bundle_path: *const c_void) -> bool;
-    fn SMAppServiceUnregister(service_name: *const c_void);
-    fn SMAppServiceCopyStatus(service_name: *const c_void) -> *const c_void;
-
     fn CFStringCreateWithCString(alloc: *const c_void, c_str: *const std::os::raw::c_char, encoding: u32) -> *const c_void;
     fn CFRelease(cf: *const c_void);
     fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
@@ -33,14 +79,15 @@ extern "C" {
     ) -> i32;
 }
 
-const kCFStringEncodingUTF8: u32 = 0x08000100;
-const kCFCompareEqualTo: i32 = 0;
+const K_CFSTRING_ENCODING_UTF8: u32 = 0x08000100;
+const K_CFCOMPARE_EQUAL_TO: i32 = 0;
 
 pub fn get_status() -> Result<HelperStatus, String> {
+    let fns = get_smapp_fns()?;
     let service_name = make_cfstring("xyz.dvnlabs.xsshtunnel");
 
     unsafe {
-        let status = SMAppServiceCopyStatus(service_name);
+        let status = (fns.copy_status)(service_name);
         CFRelease(service_name);
 
         let installed = !status.is_null();
@@ -52,7 +99,7 @@ pub fn get_status() -> Result<HelperStatus, String> {
 
             let status_val = CFDictionaryGetValue(status, status_key);
             if !status_val.is_null() {
-                if CFStringCompare(status_val, enabled_key, 0) == kCFCompareEqualTo {
+                if CFStringCompare(status_val, enabled_key, 0) == K_CFCOMPARE_EQUAL_TO {
                     running = true;
                 }
             }
@@ -67,16 +114,16 @@ pub fn get_status() -> Result<HelperStatus, String> {
 }
 
 pub fn install(bundle_path: &str) -> Result<(), String> {
+    let fns = get_smapp_fns()?;
     let service_name = make_cfstring("xyz.dvnlabs.xsshtunnel");
     let path_cf = make_cfstring(bundle_path);
 
     unsafe {
-        // First create authorization to prompt for admin credentials
         let mut auth: *const c_void = std::ptr::null();
         let status = AuthorizationCreate(
             std::ptr::null(),
             std::ptr::null(),
-            0, // kAuthorizationFlagDefaults
+            0,
             &mut auth,
         );
         if status != 0 || auth.is_null() {
@@ -85,7 +132,7 @@ pub fn install(bundle_path: &str) -> Result<(), String> {
             return Err("Failed to get admin authorization".to_string());
         }
 
-        let success = SMAppServiceRegister(service_name, path_cf);
+        let success = (fns.register)(service_name, path_cf);
 
         CFRelease(auth);
         CFRelease(service_name);
@@ -100,10 +147,11 @@ pub fn install(bundle_path: &str) -> Result<(), String> {
 }
 
 pub fn uninstall() -> Result<(), String> {
+    let fns = get_smapp_fns()?;
     let service_name = make_cfstring("xyz.dvnlabs.xsshtunnel");
 
     unsafe {
-        SMAppServiceUnregister(service_name);
+        (fns.unregister)(service_name);
         CFRelease(service_name);
     }
 
@@ -113,5 +161,5 @@ pub fn uninstall() -> Result<(), String> {
 fn make_cfstring(s: &str) -> *const c_void {
     use std::ffi::CString;
     let c_str = CString::new(s).unwrap();
-    unsafe { CFStringCreateWithCString(std::ptr::null(), c_str.as_ptr(), kCFStringEncodingUTF8) }
+    unsafe { CFStringCreateWithCString(std::ptr::null(), c_str.as_ptr(), K_CFSTRING_ENCODING_UTF8) }
 }
