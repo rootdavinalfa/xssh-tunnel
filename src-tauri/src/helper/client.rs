@@ -19,6 +19,8 @@ impl HelperClient {
 
     pub fn create_tun(&mut self) -> Result<(String, RawFd), AppError> {
         self.send_command(r#"{"cmd":"create_tun"}"#)?;
+        // Receive fd BEFORE reading JSON (helper sends fd first)
+        let fd = self.recv_fd()?;
         let response = self.read_response()?;
 
         if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
@@ -30,7 +32,6 @@ impl HelperClient {
             .ok_or_else(|| AppError::Tunnel("Missing tun_name in response".to_string()))?
             .to_string();
 
-        let fd = self.recv_fd()?;
         Ok((tun_name, fd))
     }
 

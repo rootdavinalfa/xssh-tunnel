@@ -92,6 +92,8 @@ fn handle_connection(mut stream: UnixStream) {
             "create_tun" => {
                 match create_tun_device() {
                     Ok((name, fd)) => {
+                        // Send fd FIRST, then JSON response
+                        send_fd(&stream, fd);
                         let resp = Response {
                             ok: true,
                             result: Some(ResponseResult { tun_name: Some(name.clone()) }),
@@ -101,7 +103,6 @@ fn handle_connection(mut stream: UnixStream) {
                         if stream.write_all(resp_str.as_bytes()).is_err() {
                             return;
                         }
-                        send_fd(&stream, fd);
                         tun_device = Some((name, fd));
                     }
                     Err(e) => {
