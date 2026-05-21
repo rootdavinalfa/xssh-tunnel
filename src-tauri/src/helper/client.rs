@@ -118,7 +118,9 @@ impl HelperClient {
 
         let cmsg_ptr = unsafe { libc::CMSG_FIRSTHDR(&msg) };
         if cmsg_ptr.is_null() {
-            return Err(AppError::Tunnel("No ancillary data received from helper".to_string()));
+            return Err(AppError::Tunnel(
+                "No ancillary data received from helper. Restart the helper daemon: sudo killall xssh-tunnel-helper".to_string()
+            ));
         }
 
         let fd = unsafe { *(libc::CMSG_DATA(cmsg_ptr) as *const RawFd) };

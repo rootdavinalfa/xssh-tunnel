@@ -224,7 +224,7 @@ fn send_fd(stream: &UnixStream, fd: RawFd) {
 
     #[repr(C)]
     struct Cmsghdr {
-        cmsg_len: usize,
+        cmsg_len: u32,
         cmsg_level: i32,
         cmsg_type: i32,
     }
@@ -241,7 +241,7 @@ fn send_fd(stream: &UnixStream, fd: RawFd) {
 
     unsafe {
         let cmsg = cmsg_space.as_mut_ptr() as *mut Cmsghdr;
-        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as usize;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as u32;
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
         *(libc::CMSG_DATA(cmsg as *mut libc::cmsghdr) as *mut RawFd) = fd;
