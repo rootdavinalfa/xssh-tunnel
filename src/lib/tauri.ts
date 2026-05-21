@@ -1,11 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { connectionState, connectionError } from './stores/connection';
+import { connectionState, connectionError, connectionStats } from './stores/connection';
 import { appendLog } from './stores/logs';
 import { helperStatus } from './stores/helper';
 import type { Profile } from './stores/profiles';
 import type { LogEntry } from './stores/logs';
 import type { HelperStatus } from './stores/helper';
+import type { StatsSnapshot } from './stores/connection';
 
 // Type-safe wrapper for the greet command
 export async function greet(name: string): Promise<string> {
@@ -146,4 +147,18 @@ export async function installHelper(): Promise<void> {
 export async function uninstallHelper(): Promise<void> {
   await invoke('uninstall_helper_cmd');
   await getHelperStatus();
+}
+
+// Connection stats
+export function listenConnectionStats(callback: (stats: StatsSnapshot) => void) {
+  return listen<StatsSnapshot>('connection-stats', (event) => {
+    callback(event.payload);
+  });
+}
+
+export function syncConnectionStats() {
+  const unlisten = listenConnectionStats((stats) => {
+    connectionStats.set(stats);
+  });
+  return unlisten;
 }

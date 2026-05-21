@@ -32,13 +32,25 @@
       </p>
     </div>
     <div class="flex gap-2">
-      {#if connectionState === 'disconnected'}
+      {#if connectionState === 'disconnected' || connectionState === 'error'}
         <Button
           onclick={() => onConnect(profile.id)}
           disabled={loading}
           size="sm"
         >
           Connect
+        </Button>
+      {:else if connectionState === 'reconnecting'}
+        <Button
+          onclick={onDisconnect}
+          variant="destructive"
+          size="sm"
+        >
+          Cancel
+        </Button>
+      {:else if connectionState === 'connecting' || connectionState === 'authenticating'}
+        <Button disabled size="sm">
+          Connecting...
         </Button>
       {:else}
         <Button

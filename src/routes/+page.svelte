@@ -5,9 +5,10 @@
   import ImportDialog from '$lib/components/import-dialog.svelte';
   import ConfirmDialog from '$lib/components/confirm-dialog.svelte';
   import ConnectionFormDialog from '$lib/components/connection-form-dialog.svelte';
+  import ConnectionStats from '$lib/components/connection-stats.svelte';
   import {
     getProfiles, deleteProfile, connectTunnel, disconnectTunnel,
-    syncConnectionState, getConnectionState, getLogs, syncLogs,
+    syncConnectionState, syncConnectionStats, getConnectionState, getLogs, syncLogs,
     parseSshConfig, importSshConfig, getHelperStatus,
   } from '$lib/tauri';
   import type { ParseResult } from '$lib/tauri';
@@ -48,6 +49,7 @@
 
   onMount(() => {
     const unlisten = syncConnectionState();
+    const unlistenStats = syncConnectionStats();
     const unlistenLogs = syncLogs();
     loadProfiles();
     getConnectionState().then(state => {
@@ -59,6 +61,7 @@
     getHelperStatus().catch(() => {});
     return () => {
       unlisten.then(fn => fn());
+      unlistenStats.then(fn => fn());
       unlistenLogs.then(fn => fn());
     };
   });
@@ -232,6 +235,9 @@
       </button>
     </div>
   {/if}
+
+  <!-- Connection Stats Bar -->
+  <ConnectionStats />
 
   <!-- Profile list -->
   <div class="space-y-4">
