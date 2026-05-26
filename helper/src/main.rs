@@ -203,6 +203,25 @@ fn handle_connection(mut stream: UnixStream, tun_device: &mut Option<(String, Ra
                 let resp = Response { ok: true, result: None, error: None };
                 let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
             }
+            "set_socks_proxy" => {
+                let port_str = req.tun_name.as_deref().unwrap_or("0");
+                let port: u16 = port_str.parse().unwrap_or(0);
+                match set_system_socks_proxy(port) {
+                    Ok(()) => {
+                        let resp = Response { ok: true, result: None, error: None };
+                        let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                    }
+                    Err(e) => {
+                        let resp = Response { ok: false, result: None, error: Some(e) };
+                        let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                    }
+                }
+            }
+            "clear_socks_proxy" => {
+                clear_system_socks_proxy();
+                let resp = Response { ok: true, result: None, error: None };
+                let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+            }
             "shutdown" => {
                 if let Some((ref name, _)) = tun_device {
                     cleanup_routes(name);
@@ -303,6 +322,69 @@ fn cleanup_routes(_tun_name: &str) {
 }
 
 /// Get the current default gateway IP on macOS
+fn get_active_network_services() -> Vec<String> {
+    // macOS: networksetup -listallnetworkservices returns service names
+    let output = Command::new("networksetup")
+        .args(["-listallnetworkservices"])
+        .output()
+        .ok();
+    
+    let mut services = Vec::new();
+    if let Some(output) = output {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let line = line.trim();
+            // Skip header line "An asterisk (*) denotes that a network service is disabled."
+            if line.contains("asterisk") || line.contains("denotes") || line.is_empty() || line == "An asterisk (*) denotes that a network service is disabled." {
+                continue;
+            }
+            // Skip disabled services (start with *)
+            if line.starts_with('*') {
+                continue;
+            }
+            services.push(line.to_string());
+        }
+    }
+    services
+}
+
+fn set_system_socks_proxy(port: u16) -> Result<(), String> {
+    log_info!("setting system SOCKS proxy to 127.0.0.1:{}", port);
+    
+    let services = get_active_network_services();
+    if services.is_empty() {
+        log_warn!("no active network services found for proxy config");
+        return Ok(());
+    }
+
+    for service in &services {
+        log_debug!("setting SOCKS proxy for service '{}'", service);
+        let _ = Command::new("networksetup")
+            .args(["-setsocksfirewallproxy", service, "127.0.0.1", &port.to_string()])
+            .status();
+        // Enable the SOCKS proxy
+        let _ = Command::new("networksetup")
+            .args(["-setsocksfirewallproxystate", service, "on"])
+            .status();
+    }
+
+    log_info!("system SOCKS proxy enabled on {} service(s)", services.len());
+    Ok(())
+}
+
+fn clear_system_socks_proxy() {
+    log_info!("clearing system SOCKS proxy");
+    
+    let services = get_active_network_services();
+    for service in &services {
+        let _ = Command::new("networksetup")
+            .args(["-setsocksfirewallproxystate", service, "off"])
+            .status();
+    }
+
+    log_info!("system SOCKS proxy disabled");
+}
+
 fn get_default_gateway() -> Result<String, String> {
     // macOS: route -n get default returns the gateway
     let output = Command::new("route")

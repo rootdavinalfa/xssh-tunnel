@@ -103,6 +103,27 @@ impl HelperClient {
         Ok(())
     }
 
+    pub fn set_socks_proxy(&mut self, port: u16) -> Result<(), AppError> {
+        let cmd = format!(r#"{{"cmd":"set_socks_proxy","tun_name":"{}"}}"#, port);
+        self.send_command(&cmd)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper set_socks_proxy failed: {}", err)));
+        }
+        Ok(())
+    }
+
+    pub fn clear_socks_proxy(&mut self) -> Result<(), AppError> {
+        self.send_command(r#"{"cmd":"clear_socks_proxy"}"#)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper clear_socks_proxy failed: {}", err)));
+        }
+        Ok(())
+    }
+
     fn send_command(&mut self, cmd: &str) -> Result<(), AppError> {
         let msg = format!("{}\n", cmd);
         self.stream.write_all(msg.as_bytes())

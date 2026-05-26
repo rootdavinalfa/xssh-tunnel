@@ -17,14 +17,13 @@ use error::AppError;
 use helper::HelperClient;
 use logs::LogEntry;
 use profiles::{create_profile, update_profile, get_profiles, get_profile_by_id, delete_profile, CreateProfileRequest, UpdateProfileRequest};
-use ssh::config_parser::{parse_ssh_config, SshConfigEntry, ParseResult};
+use ssh::config_parser::{parse_ssh_config, ParseResult};
 use tunnel::{Tunnel, TunnelConfig};
 
 struct AppState {
     db: DbPool,
     master_key: [u8; 32],
     tunnel: Mutex<Option<Tunnel>>,
-    helper: Mutex<Option<HelperClient>>,
 }
 
 async fn emit_log(
@@ -107,195 +106,77 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
         _ => (profile.username, None),
     };
 
-    emit_log(&app, &state.db, "info", "SSH authentication successful", Some(&profile_id)).await;
+    emit_log(&app, &state.db, "info", "SSH credentials decrypted", Some(&profile_id)).await;
     app.emit("connection-state", "authenticating").unwrap();
 
-    // Connect to privileged helper
-    let helper_connect_result = HelperClient::connect();
+    // Create stats emitter - Arc shared with SOCKS5 proxy
+    let stats = std::sync::Arc::new(tunnel::ConnectionStats::new());
+    let stats_for_emit = stats.clone();
+    let app_for_stats = app.clone();
 
-    let mut helper = match helper_connect_result {
-        Ok(h) => h,
-        Err(e) => {
-            emit_log(&app, &state.db, "error", &format!("Connection failed: {}", e), Some(&profile_id)).await;
-            app.emit("connection-state", "disconnected").unwrap();
-            return Err(e);
+    // Emit stats every 1 second
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let snapshot = stats_for_emit.snapshot();
+            let _ = app_for_stats.emit("connection-stats", &snapshot);
         }
+    });
+
+    // Build tunnel: SSH connect + SOCKS5 proxy
+    let mut tunnel = Tunnel::new(profile_id.clone(), stats.clone());
+    let config = TunnelConfig {
+        ssh_host: profile.host.clone(),
+        ssh_port: profile.port as u16,
+        ssh_username: username.clone(),
+        ssh_password: password.unwrap_or_default(),
     };
 
-    // Create TUN device via helper
-    let tun_result = helper.create_tun();
-    match tun_result {
-        Ok((tun_name, tun_fd)) => {
-            emit_log(&app, &state.db, "info", &format!("TUN device {} created via helper", tun_name), Some(&profile_id)).await;
+    match tunnel.start(config).await {
+        Ok(()) => {
+            let socks_port = tunnel.socks5_port();
+            emit_log(&app, &state.db, "info", &format!("Tunnel active, SOCKS5 proxy on 127.0.0.1:{}", socks_port), Some(&profile_id)).await;
+            app.emit("connection-state", "tunnel-active").unwrap();
 
-            // Resolve SSH hostname to IP for host route
-            let ssh_host_ip = match tokio::net::lookup_host(format!("{}:{}", profile.host, profile.port)).await {
-                Ok(mut addrs) => {
-                    if let Some(addr) = addrs.next() {
-                        let ip = addr.ip().to_string();
-                        emit_log(&app, &state.db, "info", &format!("Resolved {} -> {}", profile.host, ip), Some(&profile_id)).await;
-                        Some(ip)
-                    } else {
-                        emit_log(&app, &state.db, "warn", &format!("No DNS result for {}", profile.host), Some(&profile_id)).await;
-                        None
+            // Set system SOCKS proxy via helper (best-effort)
+            match HelperClient::connect() {
+                Ok(mut h) => {
+                    if let Err(e) = h.set_socks_proxy(socks_port) {
+                        emit_log(&app, &state.db, "warn", &format!("Failed to set system proxy: {}", e), Some(&profile_id)).await;
                     }
                 }
                 Err(e) => {
-                    emit_log(&app, &state.db, "warn", &format!("DNS lookup failed for {}: {}", profile.host, e), Some(&profile_id)).await;
-                    None
-                }
-            };
-
-            // Add host route for SSH server BEFORE split routes
-            // This prevents the SSH connection from routing through the TUN device
-            if let Some(ref ip) = ssh_host_ip {
-                match helper.add_host_route(ip) {
-                    Ok(()) => {
-                        emit_log(&app, &state.db, "info", &format!("Host route added for {}", ip), Some(&profile_id)).await;
-                    }
-                    Err(e) => {
-                        emit_log(&app, &state.db, "warn", &format!("Host route failed (non-fatal): {}", e), Some(&profile_id)).await;
-                    }
+                    emit_log(&app, &state.db, "warn", &format!("Helper not available for proxy config: {}", e), Some(&profile_id)).await;
                 }
             }
 
-            // Inject split routes via helper (captures all traffic except SSH host)
-            let route_result = helper.add_route(&tun_name);
-            match route_result {
-                Ok(()) => {
-                    emit_log(&app, &state.db, "info", "Routes injected via helper", Some(&profile_id)).await;
+            // Spawn monitor task to watch for tunnel disconnection
+            let app_for_monitor = app.clone();
+            let db_for_monitor = state.db.clone();
+            let profile_id_for_monitor = profile_id.clone();
 
-                    // Start tunnel with pre-created TUN
-                    // Create stats emitter - Arc shared with PacketRouter via Tunnel
-                    let stats = std::sync::Arc::new(tunnel::ConnectionStats::new());
-                    let stats_for_emit = stats.clone();
-                    let app_for_stats = app.clone();
-
-                    // Emit stats every 1 second
-                    tokio::spawn(async move {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                            let snapshot = stats_for_emit.snapshot();
-                            let _ = app_for_stats.emit("connection-stats", &snapshot);
-                        }
-                    });
-
-                    let mut tunnel = Tunnel::new(profile_id.clone(), stats.clone());
-                    tunnel.ssh_host_ip = ssh_host_ip.clone();
-                    let config = TunnelConfig {
-                        ssh_host: profile.host.clone(),
-                        ssh_port: profile.port as u16,
-                        ssh_username: username.clone(),
-                        ssh_password: password.unwrap_or_default(),
-                    };
-
-                    match tunnel.start(config, tun_fd, &tun_name).await {
-                        Ok(()) => {
-                            emit_log(&app, &state.db, "info", "Tunnel active", Some(&profile_id)).await;
-                            app.emit("connection-state", "tunnel-active").unwrap();
-                            
-                            // Spawn reaper task to watch for disconnections and auto-reconnect
-                            let app_for_reaper = app.clone();
-                            let db_for_reaper = state.db.clone();
-                            let profile_id_for_reaper = profile_id.clone();
-                            
-                            tokio::spawn(async move {
-                                // Wait a bit for the router to start, then wait for it to exit
-                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                                
-                                // Take the router handle from the tunnel
-                                let handle = {
-                                    let state_for_reaper = app_for_reaper.state::<AppState>();
-                                    let mut tunnel = state_for_reaper.tunnel.lock().await;
-                                    tunnel.as_mut().and_then(|t| t.router_handle.take())
-                                };
-                                
-                                if let Some(h) = handle {
-                                    let _ = h.await;
-                                }
-                                
-                                // Router exited — SSH connection is dead.
-                                // IMMEDIATELY remove split routes to restore normal network access.
-                                // Without this, all traffic goes into the dead TUN device.
-                                {
-                                    let state_for_reaper = app_for_reaper.state::<AppState>();
-                                    let mut helper_lock = state_for_reaper.helper.lock().await;
-                                    let tunnel_lock = state_for_reaper.tunnel.lock().await;
-                                    if let (Some(ref mut h), Some(ref t)) = (helper_lock.as_mut(), tunnel_lock.as_ref()) {
-                                        if let Some(ref ip) = t.ssh_host_ip {
-                                            let _ = h.remove_host_route(ip);
-                                        }
-                                        if let Some(ref name) = t.tun_name {
-                                            let _ = h.cleanup_routes(name);
-                                        }
-                                    }
-                                }
-
-                                // Router exited - attempt reconnect with exponential backoff
-                                for attempt in 1u32..=10 {
-                                    let delay = std::time::Duration::from_secs(2u64.pow(attempt).min(60));
-                                    tokio::time::sleep(delay).await;
-                                    
-                                    app_for_reaper.emit("connection-state", "reconnecting").unwrap();
-                                    
-                                    let state_for_reaper = app_for_reaper.state::<AppState>();
-                                    let mut tunnel_lock = state_for_reaper.tunnel.lock().await;
-                                    let mut helper_lock = state_for_reaper.helper.lock().await;
-                                    
-                                    if let (Some(t), Some(ref mut h)) = (tunnel_lock.as_mut(), helper_lock.as_mut()) {
-                                        match t.reconnect(h).await {
-                                            Ok(()) => {
-                                                app_for_reaper.emit("connection-state", "tunnel-active").unwrap();
-                                                emit_log(&app_for_reaper, &db_for_reaper, "info", 
-                                                    "Reconnection successful", Some(&profile_id_for_reaper)).await;
-                                                return;
-                                            }
-                                            Err(e) => {
-                                                emit_log(&app_for_reaper, &db_for_reaper, "error",
-                                                    &format!("Reconnect attempt {} failed: {}", attempt, e),
-                                                    Some(&profile_id_for_reaper)).await;
-                                            }
-                                        }
-                                    } else {
-                                        // Tunnel or helper no longer available - give up
-                                        break;
-                                    }
-                                }
-                                
-                                app_for_reaper.emit("connection-state", "disconnected").unwrap();
-                                emit_log(&app_for_reaper, &db_for_reaper, "warn",
-                                    "Auto-reconnect gave up after 10 attempts", Some(&profile_id_for_reaper)).await;
-                            });
-                            
-                            let mut tunnel_guard = state.tunnel.lock().await;
-                            *tunnel_guard = Some(tunnel);
-                            let mut helper_guard = state.helper.lock().await;
-                            *helper_guard = Some(helper);
-                            Ok("Connected".to_string())
-                        }
-                        Err(e) => {
-                            emit_log(&app, &state.db, "error", &format!("Tunnel start failed: {}", e), Some(&profile_id)).await;
-                            app.emit("connection-state", "disconnected").unwrap();
-                            if let Some(ref ip) = ssh_host_ip {
-                                let _ = helper.remove_host_route(ip);
-                            }
-                            let _ = helper.cleanup_routes(&tun_name);
-                            Err(e)
-                        }
+            tokio::spawn(async move {
+                // Wait for SSH client to be dropped (signals disconnect)
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let state_for_monitor = app_for_monitor.state::<AppState>();
+                    let tunnel_lock = state_for_monitor.tunnel.lock().await;
+                    if tunnel_lock.as_ref().map(|t| t.ssh_client.is_none()).unwrap_or(true) {
+                        drop(tunnel_lock);
+                        app_for_monitor.emit("connection-state", "disconnected").unwrap();
+                        emit_log(&app_for_monitor, &db_for_monitor, "info",
+                            "Tunnel disconnected", Some(&profile_id_for_monitor)).await;
+                        return;
                     }
                 }
-                Err(e) => {
-                    emit_log(&app, &state.db, "error", &format!("Route injection failed: {}", e), Some(&profile_id)).await;
-                    app.emit("connection-state", "disconnected").unwrap();
-                    if let Some(ref ip) = ssh_host_ip {
-                        let _ = helper.remove_host_route(ip);
-                    }
-                    Err(e)
-                }
-            }
+            });
+
+            let mut tunnel_guard = state.tunnel.lock().await;
+            *tunnel_guard = Some(tunnel);
+            Ok("Connected".to_string())
         }
         Err(e) => {
-            emit_log(&app, &state.db, "error", &format!("TUN creation failed: {}", e), Some(&profile_id)).await;
+            emit_log(&app, &state.db, "error", &format!("Connection failed: {}", e), Some(&profile_id)).await;
             app.emit("connection-state", "disconnected").unwrap();
             Err(e)
         }
@@ -308,22 +189,16 @@ async fn disconnect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppSta
         let mut tunnel_guard = state.tunnel.lock().await;
         tunnel_guard.take()
     };
-    let mut helper = {
-        let mut helper_guard = state.helper.lock().await;
-        helper_guard.take()
-    };
 
     if let Some(mut t) = tunnel {
-        if let Some(ref mut h) = helper {
-            // Remove host route for SSH server first
-            if let Some(ref ip) = t.ssh_host_ip {
-                let _ = h.remove_host_route(ip);
+        // Clear system SOCKS proxy
+        match HelperClient::connect() {
+            Ok(mut h) => {
+                let _ = h.clear_socks_proxy();
             }
-            // Then remove split routes
-            if let Some(ref name) = t.tun_name {
-                let _ = h.cleanup_routes(name);
-            }
+            Err(_) => {}
         }
+
         t.stop().await?;
         emit_log(&app, &state.db, "info", "Disconnected from tunnel", None).await;
         app.emit("connection-state", "disconnected").unwrap();
@@ -502,7 +377,6 @@ pub fn run() {
                 db,
                 master_key,
                 tunnel: Mutex::new(None),
-                helper: Mutex::new(None),
             });
 
             // Prune old logs

@@ -1,21 +1,17 @@
 pub mod tun_device;
-pub mod proxy;
-pub mod packet_router;
+pub mod socks5;
 
 pub use tun_device::TunDevice;
-pub use packet_router::PacketRouter;
+pub use socks5::Socks5Proxy;
 
 use std::sync::Arc;
 
 use crate::error::AppError;
 use crate::ssh::{SshClient, SshConfig};
-use crate::helper::HelperClient;
 
 pub struct Tunnel {
     pub ssh_client: Option<Arc<SshClient>>,
-    pub router_handle: Option<tokio::task::JoinHandle<Result<(), AppError>>>,
-    pub tun_name: Option<String>,
-    pub ssh_host_ip: Option<String>,
+    pub socks5: Socks5Proxy,
     pub stats: Arc<ConnectionStats>,
     pub config: Option<TunnelConfig>,
     pub profile_id: String,
@@ -64,9 +60,7 @@ impl Tunnel {
     pub fn new(profile_id: String, stats: Arc<ConnectionStats>) -> Self {
         Tunnel {
             ssh_client: None,
-            router_handle: None,
-            tun_name: None,
-            ssh_host_ip: None,
+            socks5: Socks5Proxy::new(),
             stats,
             config: None,
             profile_id,
@@ -76,13 +70,8 @@ impl Tunnel {
     pub async fn start(
         &mut self,
         config: TunnelConfig,
-        tun_fd: std::os::unix::io::RawFd,
-        tun_name: &str,
     ) -> Result<(), AppError> {
         self.config = Some(config.clone());
-
-        let _tun = TunDevice::from_fd(tun_fd, tun_name)
-            .map_err(|e| AppError::Tunnel(e))?;
 
         let ssh_config = SshConfig {
             host: config.ssh_host,
@@ -92,46 +81,23 @@ impl Tunnel {
         };
         let ssh_client = Arc::new(SshClient::connect(ssh_config).await?);
 
-        let router = PacketRouter::new(ssh_client.clone(), self.stats.clone(), tun_fd);
-        let router_handle = tokio::task::spawn_blocking(move || {
-            router.blocking_read_loop()
-        });
+        // Start SOCKS5 proxy on a random port
+        let socks_port = self.socks5.start(ssh_client.clone(), self.stats.clone(), 0).await?;
+        tracing::info!("SOCKS5 proxy started on 127.0.0.1:{}", socks_port);
 
-        self.tun_name = Some(tun_name.to_string());
         self.ssh_client = Some(ssh_client);
-        self.router_handle = Some(router_handle);
 
-        Ok(())
-    }
-
-    pub async fn reconnect(&mut self, helper: &mut HelperClient) -> Result<(), AppError> {
-        let config = self.config.as_ref()
-            .ok_or_else(|| AppError::Tunnel("no stored config".to_string()))?
-            .clone();
-
-        let (tun_name, tun_fd) = helper.create_tun()?;
-
-        // Resolve SSH hostname and add host route before split routes
-        let host_ip = match tokio::net::lookup_host(format!("{}:{}", config.ssh_host, config.ssh_port)).await {
-            Ok(mut addrs) => addrs.next().map(|addr| addr.ip().to_string()),
-            Err(_) => None,
-        };
-        if let Some(ref ip) = host_ip {
-            let _ = helper.add_host_route(ip);
-        }
-        self.ssh_host_ip = host_ip;
-
-        helper.add_route(&tun_name)?;
-        self.start(config, tun_fd, &tun_name).await?;
         Ok(())
     }
 
     pub async fn stop(&mut self) -> Result<(), AppError> {
-        if let Some(handle) = self.router_handle.take() {
-            handle.abort();
-        }
+        self.socks5.stop();
         self.ssh_client = None;
         Ok(())
+    }
+
+    pub fn socks5_port(&self) -> u16 {
+        self.socks5.port()
     }
 }
 
