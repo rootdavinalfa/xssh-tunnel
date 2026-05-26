@@ -314,6 +314,23 @@ fn greet(name: String) -> String {
     format!("Hello, {}! You've been greeted from Rust.", name)
 }
 
+/// Call on app startup to clean up stale proxy state from a previous crash.
+/// This prevents the user from being stuck with pf rules, wrong DNS, or
+/// SOCKS proxy settings after an unexpected exit.
+fn cleanup_stale_proxies() {
+    match HelperClient::connect() {
+        Ok(mut h) => {
+            match h.teardown_proxies() {
+                Ok(()) => eprintln!("[startup] Stale proxy state cleaned up"),
+                Err(e) => eprintln!("[startup] Cleanup note: {} (helper may not be running)", e),
+            }
+        }
+        Err(_) => {
+            eprintln!("[startup] Helper not available for proxy cleanup (normal on first run)");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -375,7 +392,10 @@ pub fn run() {
 
             // Clone db for log pruning
             let db_clone = db.clone();
-            
+
+            // Clean up any stale proxy state from previous crash
+            cleanup_stale_proxies();
+
             app.manage(AppState {
                 db,
                 master_key,
