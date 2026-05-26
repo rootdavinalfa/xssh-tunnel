@@ -40,6 +40,7 @@ struct Request {
     cmd: String,
     tun_name: Option<String>,
     host_ip: Option<String>,
+    socks_port: Option<u16>,
 }
 
 #[derive(Serialize)]
@@ -204,8 +205,7 @@ fn handle_connection(mut stream: UnixStream, tun_device: &mut Option<(String, Ra
                 let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
             }
             "set_socks_proxy" => {
-                let port_str = req.tun_name.as_deref().unwrap_or("0");
-                let port: u16 = port_str.parse().unwrap_or(0);
+                let port = req.socks_port.unwrap_or(0);
                 match set_system_socks_proxy(port) {
                     Ok(()) => {
                         let resp = Response { ok: true, result: None, error: None };
@@ -218,6 +218,34 @@ fn handle_connection(mut stream: UnixStream, tun_device: &mut Option<(String, Ra
                 }
             }
             "clear_socks_proxy" => {
+                clear_system_socks_proxy();
+                let resp = Response { ok: true, result: None, error: None };
+                let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+            }
+            "setup_proxies" => {
+                // Run all proxy setup steps. Reports which steps failed (non-fatal).
+                let socks_port = req.socks_port.unwrap_or(0);
+                let mut errors = Vec::new();
+                if let Err(e) = save_dns_servers() { errors.push(e); }
+                if let Err(e) = set_local_dns() { errors.push(e); }
+                if let Err(e) = enable_pf_rules() { errors.push(e); }
+                if let Err(e) = set_cli_proxy(socks_port) { errors.push(e); }
+                if let Err(e) = set_system_socks_proxy(socks_port) { errors.push(e); }
+                if errors.is_empty() {
+                    let resp = Response { ok: true, result: None, error: None };
+                    let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                } else {
+                    let err_str = errors.join("; ");
+                    log_warn!("proxy setup had errors: {}", err_str);
+                    let resp = Response { ok: true, result: None, error: Some(err_str) };
+                    let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
+                }
+            }
+            "teardown_proxies" => {
+                // Reverse of setup_proxies
+                disable_pf_rules();
+                let _ = restore_dns_servers();
+                clear_cli_proxy();
                 clear_system_socks_proxy();
                 let resp = Response { ok: true, result: None, error: None };
                 let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
@@ -383,6 +411,138 @@ fn clear_system_socks_proxy() {
     }
 
     log_info!("system SOCKS proxy disabled");
+}
+
+// ── DNS save / restore ──────────────────────────────────────────────────
+
+const DNS_STORE: &str = "/tmp/xssh-tunnel-dns.json";
+
+fn save_dns_servers() -> Result<(), String> {
+    let services = get_active_network_services();
+    let mut map = serde_json::Map::new();
+    for service in &services {
+        let output = Command::new("networksetup")
+            .args(["-getdnsservers", service])
+            .output()
+            .map_err(|e| format!("Failed to get DNS for {}: {}", service, e))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let servers: Vec<&str> = stdout.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.contains("not configured")).collect();
+        map.insert(service.clone(), serde_json::Value::Array(servers.iter().map(|s| serde_json::Value::String(s.to_string())).collect()));
+    }
+    let json = serde_json::Value::Object(map);
+    let s = serde_json::to_string(&json).map_err(|e| format!("DNS serialization error: {}", e))?;
+    std::fs::write(DNS_STORE, s).map_err(|e| format!("Failed to save DNS: {}", e))?;
+    log_info!("saved DNS servers to {}", DNS_STORE);
+    Ok(())
+}
+
+fn restore_dns_servers() -> Result<(), String> {
+    let data = match std::fs::read_to_string(DNS_STORE) {
+        Ok(d) => d,
+        Err(_) => {
+            log_warn!("no saved DNS to restore");
+            return Ok(());
+        }
+    };
+    let json: serde_json::Value = serde_json::from_str(&data).map_err(|e| format!("DNS parse error: {}", e))?;
+    let map = json.as_object().ok_or("invalid DNS store")?;
+
+    for (service, servers_val) in map {
+        let servers: Vec<String> = servers_val.as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default();
+        if servers.is_empty() {
+            // Use "empty" to clear DNS (use DHCP)
+            let _ = Command::new("networksetup")
+                .args(["-setdnsservers", service, "empty"])
+                .status();
+        } else {
+            let mut args = vec!["-setdnsservers".to_string(), service.to_string()];
+            args.extend(servers);
+            let _ = Command::new("networksetup").args(&args).status();
+        }
+    }
+
+    let _ = std::fs::remove_file(DNS_STORE);
+    log_info!("restored DNS servers from saved state");
+    Ok(())
+}
+
+fn set_local_dns() -> Result<(), String> {
+    let services = get_active_network_services();
+    for service in &services {
+        let _ = Command::new("networksetup")
+            .args(["-setdnsservers", service, "127.0.0.1"])
+            .status();
+    }
+    log_info!("DNS set to 127.0.0.1 on {} service(s)", services.len());
+    Ok(())
+}
+
+// ── pf rules for transparent proxy ─────────────────────────────────────
+
+const PF_ANCHOR: &str = "com.xssh.tunnel";
+
+fn enable_pf_rules() -> Result<(), String> {
+    // Enable pf
+    Command::new("pfctl").args(["-e"]).output().ok();
+
+    // Write pf rules to a temp file
+    let rules = format!(
+        "rdr pass inet proto tcp from any to any port {{80,443}} -> 127.0.0.1 port 8080\n\
+         rdr pass inet proto udp from any to any port 53 -> 127.0.0.1 port 5353\n"
+    );
+    let rules_path = "/tmp/xssh-tunnel-pf.conf";
+    std::fs::write(rules_path, &rules)
+        .map_err(|e| format!("Failed to write pf rules: {}", e))?;
+
+    // Load into anchor
+    let output = Command::new("pfctl")
+        .args(["-a", PF_ANCHOR, "-f", rules_path])
+        .output()
+        .map_err(|e| format!("Failed to load pf rules: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log_warn!("pfctl load stderr: {}", stderr.trim());
+    }
+
+    log_info!("pf rules loaded into anchor '{}'", PF_ANCHOR);
+    Ok(())
+}
+
+fn disable_pf_rules() {
+    let _ = Command::new("pfctl")
+        .args(["-a", PF_ANCHOR, "-F", "all"])
+        .status();
+    log_info!("pf rules flushed from anchor '{}'", PF_ANCHOR);
+}
+
+// ── CLI proxy env vars ──────────────────────────────────────────────────
+
+fn set_cli_proxy(socks_port: u16) -> Result<(), String> {
+    // Use launchctl setenv to set ALL_PROXY for new processes
+    let proxy = format!("socks5://127.0.0.1:{}", socks_port);
+    Command::new("launchctl")
+        .args(["setenv", "ALL_PROXY", &proxy])
+        .status()
+        .map_err(|e| format!("launchctl setenv ALL_PROXY failed: {}", e))?;
+    // Also set HTTP_PROXY and HTTPS_PROXY for compatibility
+    Command::new("launchctl")
+        .args(["setenv", "HTTP_PROXY", &proxy])
+        .status().ok();
+    Command::new("launchctl")
+        .args(["setenv", "HTTPS_PROXY", &proxy])
+        .status().ok();
+    log_info!("CLI proxy env vars set to {}", proxy);
+    Ok(())
+}
+
+fn clear_cli_proxy() {
+    let _ = Command::new("launchctl").args(["unsetenv", "ALL_PROXY"]).status();
+    let _ = Command::new("launchctl").args(["unsetenv", "HTTP_PROXY"]).status();
+    let _ = Command::new("launchctl").args(["unsetenv", "HTTPS_PROXY"]).status();
+    log_info!("CLI proxy env vars cleared");
 }
 
 fn get_default_gateway() -> Result<String, String> {

@@ -104,7 +104,7 @@ impl HelperClient {
     }
 
     pub fn set_socks_proxy(&mut self, port: u16) -> Result<(), AppError> {
-        let cmd = format!(r#"{{"cmd":"set_socks_proxy","tun_name":"{}"}}"#, port);
+        let cmd = format!(r#"{{"cmd":"set_socks_proxy","socks_port":{}}}"#, port);
         self.send_command(&cmd)?;
         let response = self.read_response()?;
         if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
@@ -120,6 +120,29 @@ impl HelperClient {
         if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
             return Err(AppError::Tunnel(format!("Helper clear_socks_proxy failed: {}", err)));
+        }
+        Ok(())
+    }
+
+    /// Full proxy setup: save DNS, set local DNS, pf rules, CLI env, SOCKS
+    pub fn setup_proxies(&mut self, socks_port: u16) -> Result<(), AppError> {
+        let cmd = format!(r#"{{"cmd":"setup_proxies","socks_port":{}}}"#, socks_port);
+        self.send_command(&cmd)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper setup_proxies failed: {}", err)));
+        }
+        Ok(())
+    }
+
+    /// Full proxy teardown: pf rules, DNS restore, CLI env, SOCKS
+    pub fn teardown_proxies(&mut self) -> Result<(), AppError> {
+        self.send_command(r#"{"cmd":"teardown_proxies"}"#)?;
+        let response = self.read_response()?;
+        if response.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = response.get("error").and_then(|v| v.as_str()).unwrap_or("unknown error");
+            return Err(AppError::Tunnel(format!("Helper teardown_proxies failed: {}", err)));
         }
         Ok(())
     }

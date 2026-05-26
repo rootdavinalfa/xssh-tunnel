@@ -138,15 +138,18 @@ async fn connect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppState>
             emit_log(&app, &state.db, "info", &format!("Tunnel active, SOCKS5 proxy on 127.0.0.1:{}", socks_port), Some(&profile_id)).await;
             app.emit("connection-state", "tunnel-active").unwrap();
 
-            // Set system SOCKS proxy via helper (best-effort)
+            // Full proxy setup via helper: pf rules, DNS, CLI env, SOCKS proxy
             match HelperClient::connect() {
                 Ok(mut h) => {
-                    if let Err(e) = h.set_socks_proxy(socks_port) {
-                        emit_log(&app, &state.db, "warn", &format!("Failed to set system proxy: {}", e), Some(&profile_id)).await;
+                    if let Err(e) = h.setup_proxies(socks_port) {
+                        emit_log(&app, &state.db, "warn", &format!("Proxy setup had errors: {}", e), Some(&profile_id)).await;
+                    } else {
+                        emit_log(&app, &state.db, "info", "Proxies configured: DNS, HTTP/HTTPS, CLI, SOCKS", Some(&profile_id)).await;
                     }
                 }
                 Err(e) => {
-                    emit_log(&app, &state.db, "warn", &format!("Helper not available for proxy config: {}", e), Some(&profile_id)).await;
+                    emit_log(&app, &state.db, "warn", &format!("Helper not available for proxy setup: {}", e), Some(&profile_id)).await;
+                    emit_log(&app, &state.db, "info", "Manual setup: set SOCKS5 proxy to 127.0.0.1:{}", Some(&profile_id)).await;
                 }
             }
 
@@ -191,10 +194,10 @@ async fn disconnect_tunnel(app: tauri::AppHandle, state: tauri::State<'_, AppSta
     };
 
     if let Some(mut t) = tunnel {
-        // Clear system SOCKS proxy
+        // Teardown all proxies via helper: pf rules, DNS, CLI env, SOCKS
         match HelperClient::connect() {
             Ok(mut h) => {
-                let _ = h.clear_socks_proxy();
+                let _ = h.teardown_proxies();
             }
             Err(_) => {}
         }

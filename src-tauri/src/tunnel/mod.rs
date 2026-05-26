@@ -1,5 +1,6 @@
 pub mod tun_device;
 pub mod socks5;
+pub mod proxies;
 
 pub use tun_device::TunDevice;
 pub use socks5::Socks5Proxy;
@@ -8,10 +9,12 @@ use std::sync::Arc;
 
 use crate::error::AppError;
 use crate::ssh::{SshClient, SshConfig};
+use crate::tunnel::proxies::ProxyManager;
 
 pub struct Tunnel {
     pub ssh_client: Option<Arc<SshClient>>,
     pub socks5: Socks5Proxy,
+    pub proxies: ProxyManager,
     pub stats: Arc<ConnectionStats>,
     pub config: Option<TunnelConfig>,
     pub profile_id: String,
@@ -61,6 +64,7 @@ impl Tunnel {
         Tunnel {
             ssh_client: None,
             socks5: Socks5Proxy::new(),
+            proxies: ProxyManager::new(),
             stats,
             config: None,
             profile_id,
@@ -85,6 +89,9 @@ impl Tunnel {
         let socks_port = self.socks5.start(ssh_client.clone(), self.stats.clone(), 0).await?;
         tracing::info!("SOCKS5 proxy started on 127.0.0.1:{}", socks_port);
 
+        // Start DNS proxy + transparent HTTP/HTTPS proxy
+        self.proxies.start(ssh_client.clone(), self.stats.clone());
+
         self.ssh_client = Some(ssh_client);
 
         Ok(())
@@ -92,6 +99,7 @@ impl Tunnel {
 
     pub async fn stop(&mut self) -> Result<(), AppError> {
         self.socks5.stop();
+        self.proxies.stop();
         self.ssh_client = None;
         Ok(())
     }
