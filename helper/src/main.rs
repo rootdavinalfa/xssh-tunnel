@@ -521,28 +521,27 @@ fn disable_pf_rules() {
 // ── CLI proxy env vars ──────────────────────────────────────────────────
 
 fn set_cli_proxy(socks_port: u16) -> Result<(), String> {
-    // Use launchctl setenv to set ALL_PROXY for new processes
     let proxy = format!("socks5://127.0.0.1:{}", socks_port);
-    Command::new("launchctl")
+    let output = Command::new("launchctl")
         .args(["setenv", "ALL_PROXY", &proxy])
-        .status()
-        .map_err(|e| format!("launchctl setenv ALL_PROXY failed: {}", e))?;
-    // Also set HTTP_PROXY and HTTPS_PROXY for compatibility
-    Command::new("launchctl")
-        .args(["setenv", "HTTP_PROXY", &proxy])
-        .status().ok();
-    Command::new("launchctl")
-        .args(["setenv", "HTTPS_PROXY", &proxy])
-        .status().ok();
+        .output()
+        .map_err(|e| format!("launchctl setenv ALL_PROXY: {}", e))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        log_warn!("CLI proxy not set (non-fatal): {}", stderr.trim());
+        return Ok(()); // Non-fatal — SIP may block this
+    }
+    Command::new("launchctl").args(["setenv", "HTTP_PROXY", &proxy]).output().ok();
+    Command::new("launchctl").args(["setenv", "HTTPS_PROXY", &proxy]).output().ok();
     log_info!("CLI proxy env vars set to {}", proxy);
     Ok(())
 }
 
 fn clear_cli_proxy() {
-    let _ = Command::new("launchctl").args(["unsetenv", "ALL_PROXY"]).status();
-    let _ = Command::new("launchctl").args(["unsetenv", "HTTP_PROXY"]).status();
-    let _ = Command::new("launchctl").args(["unsetenv", "HTTPS_PROXY"]).status();
-    log_info!("CLI proxy env vars cleared");
+    let _ = Command::new("launchctl").args(["unsetenv", "ALL_PROXY"]).output();
+    let _ = Command::new("launchctl").args(["unsetenv", "HTTP_PROXY"]).output();
+    let _ = Command::new("launchctl").args(["unsetenv", "HTTPS_PROXY"]).output();
+    log_info!("CLI proxy env vars cleared (if they were set)");
 }
 
 fn get_default_gateway() -> Result<String, String> {
