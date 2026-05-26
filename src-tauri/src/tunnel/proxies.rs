@@ -124,6 +124,49 @@ async fn transparent_proxy_loop(ssh: Arc<SshClient>, _stats: Arc<ConnectionStats
     }
 }
 
+/// Supported proxy modes
+enum ProxyMode {
+    /// Direct connect (transparent via pf rdr or direct connection)
+    Direct { host: String, port: u16, rest_data: Vec<u8> },
+    /// HTTP CONNECT method (browser CONNECT host:port)
+    Connect { host: String, port: u16 },
+    /// HTTP proxy with full URL (browser GET http://host/path)
+    HttpProxy { host: String, port: u16, rest_data: Vec<u8> },
+}
+
+async fn detect_proxy_mode(data: &[u8]) -> Option<ProxyMode> {
+    if data.len() < 5 { return None; }
+
+    // Check for HTTP CONNECT: "CONNECT host:port HTTP/1.1"
+    let s = std::str::from_utf8(data).ok()?;
+    if data.starts_with(b"CONNECT ") || data.starts_with(b"connect ") {
+        let rest = s.strip_prefix("CONNECT ").or_else(|| s.strip_prefix("connect "))?;
+        let host_port = rest.split_whitespace().next()?;
+        if let Some((host, port_str)) = host_port.rsplit_once(':') {
+            if let Ok(port) = port_str.parse::<u16>() {
+                return Some(ProxyMode::Connect { host: host.to_string(), port });
+            }
+        }
+    }
+
+    // Check for HTTP proxy URL: "GET http://host/path HTTP/1.1"
+    for method in &["GET ", "POST ", "PUT ", "DELETE ", "PATCH ", "HEAD ", "OPTIONS "] {
+        if data.starts_with(method.as_bytes()) {
+            let rest = &s[method.len()..].trim_start();
+            if let Some(url) = rest.split_whitespace().next() {
+                if let Some(parsed_url) = url.strip_prefix("http://") {
+                    if let Some((host, _path)) = parsed_url.split_once('/').or_else(|| parsed_url.rsplit_once(':')) {
+                        let port = 80;
+                        return Some(ProxyMode::HttpProxy { host: host.to_string(), port, rest_data: data.to_vec() });
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 async fn handle_transparent_conn(
     mut stream: TcpStream,
     ssh: Arc<SshClient>,
@@ -135,6 +178,30 @@ async fn handle_transparent_conn(
         return Err(AppError::Tunnel("too short".to_string()));
     }
 
+    // Try HTTP proxy mode (CONNECT / full URL)
+    if let Some(mode) = detect_proxy_mode(&peek_buf[..n]).await {
+        match mode {
+            ProxyMode::Connect { host, port } => {
+                tracing::info!("HTTP proxy CONNECT {}:{}", host, port);
+                let channel = ssh.open_tcp_channel(&host, port).await?;
+                let (ch_r, ch_w) = tokio::io::split(channel.into_stream());
+                stream.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await
+                    .map_err(|e| AppError::Tunnel(format!("proxy write: {}", e)))?;
+                return pipe_ssh(stream, ch_r, ch_w).await;
+            }
+            ProxyMode::HttpProxy { host, port, rest_data } => {
+                tracing::info!("HTTP proxy URL {}:{}", host, port);
+                let channel = ssh.open_tcp_channel(&host, port).await?;
+                let (mut ch_r, mut ch_w) = tokio::io::split(channel.into_stream());
+                ch_w.write_all(&rest_data).await
+                    .map_err(|e| AppError::Tunnel(format!("proxy write: {}", e)))?;
+                return pipe_ssh(stream, ch_r, ch_w).await;
+            }
+            ProxyMode::Direct { .. } => {} // fall through to transparent mode
+        }
+    }
+
+    // Transparent mode (Host header / TLS SNI) for pf rdr
     let (host, port, rest_data) = if peek_buf[0] == 0x16 && (peek_buf[1] == 0x03 || peek_buf[1] == 0x01) {
         match parse_tls_sni(&peek_buf[..n]) {
             Some(h) => (h, 443, vec![]),
@@ -149,15 +216,21 @@ async fn handle_transparent_conn(
         return Err(AppError::Tunnel("unknown protocol".to_string()));
     };
 
-    tracing::info!("Transparent proxy: {}:{}", host, port);
-
+    tracing::info!("Transparent proxy (pf rdr): {}:{}", host, port);
     let channel = ssh.open_tcp_channel(&host, port).await?;
     let (mut ch_r, mut ch_w) = tokio::io::split(channel.into_stream());
     if !rest_data.is_empty() {
         ch_w.write_all(&rest_data).await
             .map_err(|e| AppError::Tunnel(format!("proxy write: {}", e)))?;
     }
+    pipe_ssh(stream, ch_r, ch_w).await
+}
 
+async fn pipe_ssh(
+    mut stream: TcpStream,
+    mut ch_r: tokio::io::ReadHalf<impl tokio::io::AsyncRead + Unpin>,
+    mut ch_w: tokio::io::WriteHalf<impl tokio::io::AsyncWrite + Unpin>,
+) -> Result<(), AppError> {
     let (mut s_r, mut s_w) = stream.split();
 
     let to_ssh = async {

@@ -223,12 +223,10 @@ fn handle_connection(mut stream: UnixStream, tun_device: &mut Option<(String, Ra
                 let _ = stream.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes());
             }
             "setup_proxies" => {
-                // Run all proxy setup steps. Reports which steps failed (non-fatal).
                 let socks_port = req.socks_port.unwrap_or(0);
                 let mut errors = Vec::new();
                 if let Err(e) = save_dns_servers() { errors.push(e); }
-                if let Err(e) = set_local_dns() { errors.push(e); }
-                if let Err(e) = enable_pf_rules() { errors.push(e); }
+                if let Err(e) = enable_web_proxy(8080) { errors.push(e); }
                 if let Err(e) = set_cli_proxy(socks_port) { errors.push(e); }
                 if let Err(e) = set_system_socks_proxy(socks_port) { errors.push(e); }
                 if errors.is_empty() {
@@ -242,8 +240,7 @@ fn handle_connection(mut stream: UnixStream, tun_device: &mut Option<(String, Ra
                 }
             }
             "teardown_proxies" => {
-                // Reverse of setup_proxies
-                disable_pf_rules();
+                disable_web_proxy();
                 let _ = restore_dns_servers();
                 clear_cli_proxy();
                 clear_system_socks_proxy();
@@ -479,43 +476,37 @@ fn set_local_dns() -> Result<(), String> {
     Ok(())
 }
 
-// ── pf rules for transparent proxy ─────────────────────────────────────
+// ── System web proxy (HTTP/HTTPS) ──────────────────────────────────────
 
-const PF_ANCHOR: &str = "com.xssh.tunnel";
-
-fn enable_pf_rules() -> Result<(), String> {
-    // Enable pf
-    Command::new("pfctl").args(["-e"]).output().ok();
-
-    // Write pf rules to a temp file
-    let rules = format!(
-        "rdr pass inet proto tcp from any to any port {{80,443}} -> 127.0.0.1 port 8080\n\
-         rdr pass inet proto udp from any to any port 53 -> 127.0.0.1 port 5353\n"
-    );
-    let rules_path = "/tmp/xssh-tunnel-pf.conf";
-    std::fs::write(rules_path, &rules)
-        .map_err(|e| format!("Failed to write pf rules: {}", e))?;
-
-    // Load into anchor
-    let output = Command::new("pfctl")
-        .args(["-a", PF_ANCHOR, "-f", rules_path])
-        .output()
-        .map_err(|e| format!("Failed to load pf rules: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log_warn!("pfctl load stderr: {}", stderr.trim());
+fn enable_web_proxy(port: u16) -> Result<(), String> {
+    let services = get_active_network_services();
+    for service in &services {
+        // Set HTTP proxy
+        let _ = Command::new("networksetup")
+            .args(["-setwebproxy", service, "127.0.0.1", &port.to_string()])
+            .status();
+        let _ = Command::new("networksetup")
+            .args(["-setwebproxystate", service, "on"])
+            .status();
+        // Set HTTPS proxy
+        let _ = Command::new("networksetup")
+            .args(["-setsecurewebproxy", service, "127.0.0.1", &port.to_string()])
+            .status();
+        let _ = Command::new("networksetup")
+            .args(["-setsecurewebproxystate", service, "on"])
+            .status();
     }
-
-    log_info!("pf rules loaded into anchor '{}'", PF_ANCHOR);
+    log_info!("web proxy (HTTP/HTTPS) enabled on {} service(s)", services.len());
     Ok(())
 }
 
-fn disable_pf_rules() {
-    let _ = Command::new("pfctl")
-        .args(["-a", PF_ANCHOR, "-F", "all"])
-        .status();
-    log_info!("pf rules flushed from anchor '{}'", PF_ANCHOR);
+fn disable_web_proxy() {
+    let services = get_active_network_services();
+    for service in &services {
+        let _ = Command::new("networksetup").args(["-setwebproxystate", service, "off"]).status();
+        let _ = Command::new("networksetup").args(["-setsecurewebproxystate", service, "off"]).status();
+    }
+    log_info!("web proxy disabled");
 }
 
 // ── CLI proxy env vars ──────────────────────────────────────────────────
